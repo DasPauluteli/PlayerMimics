@@ -1,13 +1,10 @@
-#if (audience != "everyone")
-#error Netcode spawns an object every player must know, so a netcode mod is for everyone in the lobby (audience "everyone").
-#endif
 using System;
 using System.Reflection;
 using MonoMod.RuntimeDetour;
 using Unity.Netcode;
 using UnityEngine;
 
-namespace ModTemplate;
+namespace PlayerMimics;
 
 // One networked object per session. The host spawns it, and it carries the mod's RPCs.
 internal sealed class ModNetwork : NetworkBehaviour
@@ -33,7 +30,7 @@ internal sealed class ModNetwork : NetworkBehaviour
 internal static class ModNetworkSetup
 {
     // Picked when the mod was created, so every player registers the same network prefab id.
-    private const uint PrefabId = 2142302400;
+    private const uint PrefabId = 2041191113;
     private static GameObject? prefab;
     private static Hook? registerHook;
     private static Hook? spawnHook;

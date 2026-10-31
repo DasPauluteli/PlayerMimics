@@ -1,0 +1,19 @@
+{
+  "template": "Rethunk-Tech/mortar-bepinex5-template",
+  "ref": "v0.2.0",
+  "name": "PlayerMimics",
+  "values": {
+    "assets": "false",
+    "audience": "everyone",
+    "categories": "mods|bepinex|serverside|monsters|audio|ai-generated",
+    "config": "true",
+    "configSync": "true",
+    "description": "Placehoder description for now",
+    "idPrefix": "com.pauluteli",
+    "loaderPackVersion": "5.4.2305",
+    "modAuthor": "Pauluteli",
+    "netcode": "true",
+    "repositoryUrl": "https://github.com/DasPauluteli/PlayerMimics",
+    "team": "Pauluteli"
+  }
+}

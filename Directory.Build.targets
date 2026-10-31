@@ -1,8 +1,6 @@
 <Project>
   <Sdk Name="ThunderPipe.Sdk" />
-  <!--#if (netcode) -->
   <Sdk Name="Evaisa.NetcodePatcher.MSBuild" />
-  <!--#endif -->
 
   <PropertyGroup>
     <!-- Set here, not in the props, because Krafs.Publicizer's own props set both strategies after Directory.Build.props,
@@ -45,7 +43,6 @@
   <ItemGroup>
     <Publicize Include="Assembly-CSharp" />
   </ItemGroup>
-  <!--#if (netcode) -->
   <PropertyGroup>
     <NetcodePatcherUnityVersion>2022.3.62</NetcodePatcherUnityVersion>
     <NetcodePatcherNetcodeVersion>1.12.2</NetcodePatcherNetcodeVersion>
@@ -61,94 +58,6 @@
   <Target Name="DropUnpatched" AfterTargets="NetcodePatch">
     <Delete Files="$(TargetDir)$(TargetName)_original.dll" />
   </Target>
-
-  <!-- The patcher builds against its own copy of Unity.Netcode.Runtime, stamped 4.0.0.0 where the game's is 0.0.0.0,
-       and leaves a reference to each in the DLL. Unity's API updater then prompts when the mod is loaded into a Unity
-       project. This points every reference at the version the mod compiled against. Cecil is only downloaded, never
-       shipped. -->
-  <ItemGroup>
-    <PackageDownload Include="Mono.Cecil" Version="[0.11.6]" />
-  </ItemGroup>
-  <PropertyGroup>
-    <CecilPath>$(NuGetPackageRoot)mono.cecil/0.11.6/lib/netstandard2.0/Mono.Cecil.dll</CecilPath>
-  </PropertyGroup>
-  <UsingTask
-    TaskName="AlignAssemblyReferences"
-    TaskFactory="RoslynCodeTaskFactory"
-    AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll"
-  >
-    <ParameterGroup>
-      <Assembly ParameterType="System.String" Required="true" />
-      <References ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
-      <Rewrite ParameterType="System.Boolean" Required="true" />
-    </ParameterGroup>
-    <Task>
-      <Reference Include="$(CecilPath)" />
-      <Using Namespace="System.Collections.Generic" />
-      <Using Namespace="System.Linq" />
-      <Using Namespace="Mono.Cecil" />
-      <Code Type="Fragment" Language="cs"><![CDATA[
-        var compiled = new Dictionary<string, AssemblyNameDefinition>();
-        foreach (var item in References)
-        {
-            try
-            {
-                using var reference = ModuleDefinition.ReadModule(item.ItemSpec, new ReaderParameters { ReadingMode = ReadingMode.Deferred });
-                compiled[reference.Assembly.Name.Name] = reference.Assembly.Name;
-            }
-            catch (BadImageFormatException)
-            {
-            }
-        }
-        byte[] bytes = System.IO.File.ReadAllBytes(Assembly);
-        var module = ModuleDefinition.ReadModule(new System.IO.MemoryStream(bytes), new ReaderParameters { ReadSymbols = true });
-        var stale = module.AssemblyReferences
-            .Where(r => compiled.TryGetValue(r.Name, out var c) && c.Version != r.Version)
-            .ToList();
-        if (!Rewrite)
-        {
-            foreach (var r in stale)
-            {
-                Log.LogError("{0} references {1} {2}, but it was compiled against {3}.", Assembly, r.Name, r.Version, compiled[r.Name].Version);
-            }
-            return !Log.HasLoggedErrors;
-        }
-        if (stale.Count == 0)
-        {
-            return true;
-        }
-        foreach (var r in stale)
-        {
-            var wanted = compiled[r.Name];
-            var target = module.AssemblyReferences.FirstOrDefault(t => t.Name == r.Name && t.Version == wanted.Version);
-            if (target == null)
-            {
-                target = new AssemblyNameReference(wanted.Name, wanted.Version) { PublicKeyToken = wanted.PublicKeyToken, Culture = wanted.Culture };
-                module.AssemblyReferences.Add(target);
-            }
-            foreach (var type in module.GetTypeReferences().Where(t => t.Scope == r))
-            {
-                type.Scope = target;
-            }
-            module.AssemblyReferences.Remove(r);
-        }
-        // The symbols are embedded in the DLL (Directory.Build.props), so writing them back keeps them in step.
-        var writer = new WriterParameters { WriteSymbols = module.HasSymbols, SymbolWriterProvider = module.HasSymbols ? new Mono.Cecil.Cil.EmbeddedPortablePdbWriterProvider() : null };
-        string temp = Assembly + ".tmp";
-        module.Write(temp, writer);
-        module.Dispose();
-        System.IO.File.Replace(temp, Assembly, null);
-      ]]></Code>
-    </Task>
-  </UsingTask>
-  <Target Name="AlignNetcodeReferences" AfterTargets="DropUnpatched" Condition="'$(IsThunderstorePackable)' == 'true'">
-    <AlignAssemblyReferences Assembly="$(TargetPath)" References="@(ReferencePathWithRefAssemblies)" Rewrite="true" />
-  </Target>
-  <!-- Fails the build when the mod still references an assembly at a version other than the one it compiled against. -->
-  <Target Name="VerifyNetcodeReferences" AfterTargets="DropUnpatched" Condition="'$(IsThunderstorePackable)' == 'true'">
-    <AlignAssemblyReferences Assembly="$(TargetPath)" References="@(ReferencePathWithRefAssemblies)" Rewrite="false" />
-  </Target>
-  <!--#endif -->
 
   <!-- The output doubles as an unpacked package, so a mod manager pointed at it shows the mod. A task writes the
        manifest because WriteLinesToFile splits on semicolons and, on Linux, turns backslashes into slashes. -->
@@ -201,15 +110,6 @@
     <Copy SourceFiles="$(SolutionRoot)icon.png;$(SolutionRoot)README.md" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
-  <!--#if (assets) -->
-  <ItemGroup>
-    <AssetBundle Include="$(SolutionRoot)assets/*.bundle" />
-    <ModFile Include="@(AssetBundle)" Destination="plugins/" />
-  </ItemGroup>
-  <Target Name="CopyAssetBundles" AfterTargets="Build" Condition="'$(IsThunderstorePackable)' == 'true'">
-    <Copy SourceFiles="@(AssetBundle)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
-  </Target>
-  <!--#endif -->
 
   <ItemGroup>
     <ContentFile Include="$(SolutionRoot)content/**/*" Exclude="$(SolutionRoot)content/README.md" />

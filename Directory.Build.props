@@ -6,7 +6,7 @@
   <Import Project="$(SolutionRoot)Config.Build.user.props" Condition="Exists('$(SolutionRoot)Config.Build.user.props')" />
 
   <PropertyGroup>
-    <ThunderstoreTeam>ModXmlTeam</ThunderstoreTeam>
+    <ThunderstoreTeam>Pauluteli</ThunderstoreTeam>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -21,9 +21,9 @@
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <PropertyGroup>
-    <Authors>ModXmlAuthor</Authors>
-    <Company>ModXmlAuthor</Company>
-    <Copyright>Copyright (c) ModYear ModXmlAuthor</Copyright>
+    <Authors>Pauluteli</Authors>
+    <Company>Pauluteli</Company>
+    <Copyright>Copyright (c) 2026 Pauluteli</Copyright>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

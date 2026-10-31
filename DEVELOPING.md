@@ -1,4 +1,4 @@
-# Developing ModTemplate
+# Developing PlayerMimics
 
 ## Commit hook
 
@@ -14,7 +14,7 @@ extension) or Rider (Mono Remote on 127.0.0.1:10000). Debug builds include symbo
 ## Tests
 
 Code that doesn't touch Unity can be tested outside the game. Put an xUnit v3 project under `tests/`, for example
-`tests/ModTemplate.Tests/ModTemplate.Tests.csproj`:
+`tests/PlayerMimics.Tests/PlayerMimics.Tests.csproj`:
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -24,13 +24,13 @@ Code that doesn't touch Unity can be tested outside the game. Put an xUnit v3 pr
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/ModTemplate/ModTemplate.csproj" />
+    <ProjectReference Include="../../src/PlayerMimics/PlayerMimics.csproj" />
     <PackageReference Include="xunit.v3" Version="4.0.2" />
   </ItemGroup>
 </Project>
 ```
 
-Add it to `ModTemplate.slnx` and run `dotnet test`. CI runs it after the build. The plugin's classes derive from Unity
+Add it to `PlayerMimics.slnx` and run `dotnet test`. CI runs it after the build. The plugin's classes derive from Unity
 types, so tests reach the code through other classes, with `InternalsVisibleTo` on the plugin project for internal ones.
 
 ## Publishing
@@ -41,8 +41,8 @@ Mortar's Develop tab stores it in the same place when you upload from there. The
 when it can use your system keyring; otherwise it keeps the token inside its sandbox, where this build can't read it,
 so store it yourself as below.
 
-- Linux: `secret-tool store --label "Thunderstore ModTeam" service thunderstore username ModTeam`, then paste the token.
+- Linux: `secret-tool store --label "Thunderstore Pauluteli" service thunderstore username Pauluteli`, then paste the token.
 - Windows: `Install-Module CredentialManager`, then
-  `New-StoredCredential -Persist LocalMachine -Target 'thunderstore:ModTeam' -Password <token>`.
+  `New-StoredCredential -Persist LocalMachine -Target 'thunderstore:Pauluteli' -Password <token>`.
 
 Then run `dotnet build -c Release -p:PublishTS=true`. Don't add `-bl` or `-v:d` to a publish build: MSBuild logs task inputs, and the token is one.

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>com.pauluteli.PlayerMimics</AssemblyName>
+    <AssemblyTitle>PlayerMimics</AssemblyTitle>
+    <RootNamespace>PlayerMimics</RootNamespace>
+    <RepositoryUrl>https://github.com/DasPauluteli/PlayerMimics</RepositoryUrl>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsThunderstorePackable>true</IsThunderstorePackable>
+    <ThunderstoreName>PlayerMimics</ThunderstoreName>
+    <ThunderstoreDescription>Placehoder description for now</ThunderstoreDescription>
+    <ThunderstoreCommunities>lethal-company</ThunderstoreCommunities>
+    <ThunderstoreCategories>mods;bepinex;serverside;monsters;audio;ai-generated</ThunderstoreCategories>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ModFile Include="$(TargetPath)" Destination="plugins/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ThunderstorePackageFile Include="$(SolutionRoot)README.md" />
+    <ThunderstorePackageFile Include="$(SolutionRoot)CHANGELOG.md" />
+    <ThunderstorePackageFile Include="$(SolutionRoot)icon.png" />
+    <ThunderstorePackageFile Include="$(SolutionRoot)LICENSE" />
+    <ThunderstoreDependency Include="BepInEx-BepInExPack" Version="5.4.2305" />
+    <ThunderstoreDependency Include="Mortar-ConfigSync" Version="0.1.1" />
+    <ThunderstoreDependency Include="Evaisa-LethalLib" Version="1.2.0" />
+    <Reference Include="$(MortarDependency_Evaisa_LethalLib)**/*.dll" Condition="'$(MortarDependency_Evaisa_LethalLib)' != ''" Private="false" />
+    <Reference Include="$(MortarDependency_Mortar_ConfigSync)**/*.dll" Condition="'$(MortarDependency_Mortar_ConfigSync)' != ''" Private="false" />
+    <ThunderstoreSoftDependency Include="AinaVT-LethalConfig" Version="1.4.6" />
+    <Reference Include="$(MortarDependency_AinaVT_LethalConfig)**/*.dll" Condition="'$(MortarDependency_AinaVT_LethalConfig)' != ''" Private="false" />
+  </ItemGroup>
+</Project>
