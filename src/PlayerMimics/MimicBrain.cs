@@ -312,10 +312,10 @@ internal sealed class MimicBrain : MonoBehaviour
     private JObject BuildContext()
     {
         bool canAttack = CanAttack(out string attackReason);
-        string location = Masked.isInsidePlayerShip ? "in the ship" : Masked.isOutside ? "outside on the moon" : "inside the facility";
+        string location = GameContext.Where(transform.position, !Masked.isOutside);
         string real = Copied.isPlayerDead || !Copied.isPlayerControlled
             ? $"the real {Copied.playerUsername} is dead (only you know); never mention dying or coming back"
-            : !SameSide(Copied) ? $"the real {Copied.playerUsername} is alive, {(Copied.isInsideFactory ? "inside the facility" : "outside")}"
+            : !SameSide(Copied) ? $"the real {Copied.playerUsername} is alive, {GameContext.Where(Copied)}"
             : $"the real {Copied.playerUsername} is alive, {Dist(Copied):0} m away from you";
 
         var players = new JArray();
@@ -329,6 +329,7 @@ internal sealed class MimicBrain : MonoBehaviour
             {
                 ["name"] = p.playerUsername,
                 ["distance_m"] = Mathf.RoundToInt(Dist(p)),
+                ["location"] = GameContext.Where(p),
                 ["looking_at_you"] = SeesMe(p, 40f, 20f),
                 ["holding"] = p.currentlyHeldObjectServer != null ? p.currentlyHeldObjectServer.itemProperties.itemName : "nothing",
                 ["health"] = p.health,
@@ -348,14 +349,17 @@ internal sealed class MimicBrain : MonoBehaviour
             ["you"] = new JObject
             {
                 ["copying"] = Copied.playerUsername,
+                ["location"] = location,
+                ["holding"] = "nothing (you can't carry, show or hand over items)",
                 ["real_player"] = real,
                 ["revived"] = Disguise.Revived,
                 ["health"] = Masked.enemyHP,
                 ["disguise"] = Disguise.Revealed ? "blown, you're visibly a monster now" : "intact",
                 ["seconds_with_group"] = Mathf.RoundToInt(SecondsWithGroup),
             },
-            ["situation"] = $"{location}, {Mathf.FloorToInt(hour) % 24:00}:00" +
-                            (StartOfRound.Instance.shipIsLeaving ? ", the ship is leaving!" : ""),
+            ["situation"] = $"you are {location}; {GameContext.Clock(hour)}" +
+                            (StartOfRound.Instance.shipIsLeaving ? "; the ship is leaving right now!" : ""),
+            ["round"] = GameContext.Round(),
             ["players"] = players,
             ["events"] = evts,
             ["can_attack"] = canAttack,
