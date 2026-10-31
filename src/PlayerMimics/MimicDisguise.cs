@@ -64,6 +64,7 @@ internal sealed class MimicDisguise : MonoBehaviour
         UsePlayerAnimations();
         MakeNameTag(player);
         MakeSign();
+        CoronerCompat.OnDisguised(player);
 
         if (Masked.IsOwner && Masked.agent != null)
         {

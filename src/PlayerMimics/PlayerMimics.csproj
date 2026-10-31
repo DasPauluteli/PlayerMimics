@@ -26,6 +26,8 @@
     <ThunderstorePackageFile Include="$(SolutionRoot)LICENSE" />
     <ThunderstoreDependency Include="BepInEx-BepInExPack" Version="5.4.2305" />
     <ThunderstoreSoftDependency Include="AinaVT-LethalConfig" Version="1.4.6" />
+    <ThunderstoreSoftDependency Include="EliteMasterEric-Coroner" Version="2.4.2" />
+    <Reference Include="$(MortarDependency_EliteMasterEric_Coroner)*.dll" Condition="'$(MortarDependency_EliteMasterEric_Coroner)' != ''" Private="false" />
     <Reference Include="$(MortarDependency_AinaVT_LethalConfig)**/*.dll" Condition="'$(MortarDependency_AinaVT_LethalConfig)' != ''" Private="false" />
   </ItemGroup>
 </Project>

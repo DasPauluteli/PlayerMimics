@@ -11,6 +11,7 @@ namespace PlayerMimics;
 [BepInPlugin(MyPluginInfo.Id, MyPluginInfo.Name, MyPluginInfo.Version)]
 [BepInDependency("BetterEmotes", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInDependency("me.swipez.melonloader.morecompany", BepInDependency.DependencyFlags.SoftDependency)]
+[BepInDependency("com.elitemastereric.coroner", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInProcess("Lethal Company.exe")]
 public class Plugin : BaseUnityPlugin
 {
@@ -28,6 +29,7 @@ public class Plugin : BaseUnityPlugin
             return;
         }
         new Harmony(MyPluginInfo.Id).PatchAll(typeof(Plugin).Assembly);
+        CoronerCompat.Init();
 
         // One object for the work that isn't tied to a Masked: consent popup, voice capture, debug keys, host services.
         var root = new GameObject("PlayerMimics") { hideFlags = HideFlags.HideAndDontSave };

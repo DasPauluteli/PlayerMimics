@@ -71,6 +71,20 @@ internal static class MaskedPatches
         if (disguise != null && !disguise.Revealed) setOut = false;
     }
 
+    // Tell Coroner who the killer was pretending to be. Runs before Coroner's own "killed by a Masked" fallback.
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.First)]
+    [HarmonyPatch(nameof(MaskedPlayerEnemy.FinishKillAnimation))]
+    private static void FinishKillAnimation(MaskedPlayerEnemy __instance, bool killedPlayer)
+    {
+        var victim = __instance.inSpecialAnimationWithPlayer;
+        var disguise = __instance.GetComponent<MimicDisguise>();
+        if (killedPlayer && victim != null && victim.isPlayerDead && disguise != null)
+        {
+            CoronerCompat.OnKill(disguise, victim);
+        }
+    }
+
     [HarmonyPostfix]
     [HarmonyPatch(nameof(MaskedPlayerEnemy.HitEnemy))]
     private static void HitEnemy(MaskedPlayerEnemy __instance, PlayerControllerB playerWhoHit)

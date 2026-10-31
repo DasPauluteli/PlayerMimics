@@ -7,7 +7,8 @@ away, emote, talk, flee, or attack when the moment is right.
 Replaces Mirage, MirageRevive, LethalMimics and MaskFixes. Don't install it together with them.
 
 - **Who needs it:** everyone in the lobby.
-- **Optional:** BetterEmotes (more emotes, including the sign) and MoreCompany (cosmetics).
+- **Optional:** BetterEmotes (more emotes, including the sign), MoreCompany (cosmetics) and Coroner (the end-of-round
+  report names who the killer was pretending to be, for example "Was killed by a Masked disguised as ImTK.").
 - **Host only:** the local AI server (`~/.local/share/LethalMimicsAI`, start it with `start.sh`). Without it, Masked
   still disguise themselves and use simple scripted behaviour, but they don't talk.
 
