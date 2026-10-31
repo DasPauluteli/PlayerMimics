@@ -1,0 +1,6 @@
+<!-- Copy this to Config.Build.user.props (git ignores it) if the game isn't in Steam's default library. -->
+<Project>
+  <PropertyGroup>
+    <!-- <GameRootDir>/path/to/Lethal Company/</GameRootDir> -->
+  </PropertyGroup>
+</Project>

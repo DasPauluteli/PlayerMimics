@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json.schemastore.org/ide.host",
+  "order": 0,
+  "symbolInfo": [
+    {
+      "id": "description",
+      "name": {
+        "text": "Description"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "modAuthor",
+      "name": {
+        "text": "Author"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "team",
+      "name": {
+        "text": "Thunderstore team"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "idPrefix",
+      "name": {
+        "text": "Id prefix"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "netcode",
+      "name": {
+        "text": "Uses netcode"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "assets",
+      "name": {
+        "text": "Uses asset bundles"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "config",
+      "name": {
+        "text": "Has settings"
+      },
+      "isVisible": true
+    },
+    {
+      "id": "configSync",
+      "name": {
+        "text": "Shares settings with the lobby"
+      },
+      "isVisible": true
+    }
+  ]
+}

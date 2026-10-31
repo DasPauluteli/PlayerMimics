@@ -1,0 +1,9 @@
+# The template's sources keep template conditionals and do not compile as they stand (build.yml skips this repo
+# for the same reason). Building the template means installing it; testing it means generating and building mods,
+# which is what template.yml runs.
+[gates.build]
+run = 'hive="$(mktemp -d)" && dotnet new install . --force --debug:custom-hive "$hive" >/dev/null; s=$?; rm -rf "$hive"; exit $s'
+
+[gates.test]
+run = "tests/check.sh"
+timeout = "15m"

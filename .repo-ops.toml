@@ -1,0 +1,12 @@
+# The game assemblies this mod compiles against match the Lethal Company build it targets; a newer
+# GameLibs is a different game version, so it moves only by hand.
+[[hold]]
+package = "LethalCompany.GameLibs.Steam"
+max_version = "81.0.5-ngd.0"
+reason = "pinned to the targeted Lethal Company build"
+
+# Lethal Company runs BepInEx 5; BepInEx 6 is a different loader.
+[[hold]]
+package = "BepInEx.Core"
+max_version = "5"
+reason = "Lethal Company loads BepInEx 5"

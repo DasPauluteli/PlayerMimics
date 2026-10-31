@@ -1,0 +1,431 @@
+<Project>
+  <Sdk Name="ThunderPipe.Sdk" />
+  <!--#if (netcode) -->
+  <Sdk Name="Evaisa.NetcodePatcher.MSBuild" />
+  <!--#endif -->
+
+  <PropertyGroup>
+    <!-- Set here, not in the props, because Krafs.Publicizer's own props set both strategies after Directory.Build.props,
+         and the IgnoresAccessChecksTo one adds an attribute MonoMod.Utils already defines. Mono doesn't check access
+         anyway, so Unsafe is enough. -->
+    <PublicizerRuntimeStrategies>Unsafe</PublicizerRuntimeStrategies>
+    <RestoreAdditionalProjectSources>
+      https://nuget.bepinex.dev/v3/index.json;
+      https://nuget.windows10ce.com/nuget/v3/index.json
+    </RestoreAdditionalProjectSources>
+    <RunThunderPipePackAfterBuild
+      Condition="'$(RunThunderPipePackAfterBuild)' != 'false' And '$(IsThunderstorePackable)' == 'true' And '$(Configuration)' == 'Release'"
+    >true</RunThunderPipePackAfterBuild>
+    <RunThunderPipePublishAfterBuild
+      Condition="'$(RunThunderPipePublishAfterBuild)' != 'false' And '$(RunThunderPipePackAfterBuild)' == 'true' And '$(PublishTS)' == 'true'"
+    >true</RunThunderPipePublishAfterBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Leave out its content file (the IgnoresAccessChecksTo attribute), or it gets compiled in with a NuGet cache path in the PDB. -->
+    <PackageReference Include="Krafs.Publicizer" Version="2.3.2" PrivateAssets="all" ExcludeAssets="contentfiles" />
+    <PackageReference Include="Microsoft.Unity.Analyzers" Version="1.28.0" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+  </ItemGroup>
+
+  <!-- Use the installed game's assemblies if they're there, otherwise the stripped ones for the pinned game build. The
+       package is always restored so packages.lock.json doesn't change with whether the game is installed. -->
+  <ItemGroup>
+    <PackageReference Include="LethalCompany.GameLibs.Steam" Version="81.0.5-ngd.0" PrivateAssets="all" />
+    <PackageReference Update="LethalCompany.GameLibs.Steam" ExcludeAssets="all" Condition="Exists('$(ManagedDir)')" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(ManagedDir)')">
+    <LocalReferences
+      Include="$(ManagedDir)*.dll"
+      Exclude="$(ManagedDir)Mono*.dll;$(ManagedDir)netstandard.dll;$(ManagedDir)System*.dll;$(ManagedDir)mscorlib.dll"
+    />
+    <Reference Include="@(LocalReferences)" Private="false" />
+  </ItemGroup>
+  <!-- Krafs.Publicizer 2 picks assemblies from Publicize items. Publicize="true" on a Reference does nothing. -->
+  <ItemGroup>
+    <Publicize Include="Assembly-CSharp" />
+  </ItemGroup>
+  <!--#if (netcode) -->
+  <PropertyGroup>
+    <NetcodePatcherUnityVersion>2022.3.62</NetcodePatcherUnityVersion>
+    <NetcodePatcherNetcodeVersion>1.12.2</NetcodePatcherNetcodeVersion>
+    <!-- The game ships Transport 1.5.0, and the patcher builds every 1.x against 1.0.0. -->
+    <NetcodePatcherTransportVersion>1.0.0</NetcodePatcherTransportVersion>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IsThunderstorePackable)' == 'true'">
+    <NetcodePatch Include="$(TargetPath)" />
+    <!-- The plugin sets the prefab id itself so every player registers the same one. -->
+    <Publicize Include="Unity.Netcode.Runtime:Unity.Netcode.NetworkObject.GlobalObjectIdHash" />
+  </ItemGroup>
+  <!-- The patcher leaves the unpatched DLL next to the patched one. Both have the same GUID, so BepInEx could load either. -->
+  <Target Name="DropUnpatched" AfterTargets="NetcodePatch">
+    <Delete Files="$(TargetDir)$(TargetName)_original.dll" />
+  </Target>
+
+  <!-- The patcher builds against its own copy of Unity.Netcode.Runtime, stamped 4.0.0.0 where the game's is 0.0.0.0,
+       and leaves a reference to each in the DLL. Unity's API updater then prompts when the mod is loaded into a Unity
+       project. This points every reference at the version the mod compiled against. Cecil is only downloaded, never
+       shipped. -->
+  <ItemGroup>
+    <PackageDownload Include="Mono.Cecil" Version="[0.11.6]" />
+  </ItemGroup>
+  <PropertyGroup>
+    <CecilPath>$(NuGetPackageRoot)mono.cecil/0.11.6/lib/netstandard2.0/Mono.Cecil.dll</CecilPath>
+  </PropertyGroup>
+  <UsingTask
+    TaskName="AlignAssemblyReferences"
+    TaskFactory="RoslynCodeTaskFactory"
+    AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll"
+  >
+    <ParameterGroup>
+      <Assembly ParameterType="System.String" Required="true" />
+      <References ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Rewrite ParameterType="System.Boolean" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Reference Include="$(CecilPath)" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.Linq" />
+      <Using Namespace="Mono.Cecil" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var compiled = new Dictionary<string, AssemblyNameDefinition>();
+        foreach (var item in References)
+        {
+            try
+            {
+                using var reference = ModuleDefinition.ReadModule(item.ItemSpec, new ReaderParameters { ReadingMode = ReadingMode.Deferred });
+                compiled[reference.Assembly.Name.Name] = reference.Assembly.Name;
+            }
+            catch (BadImageFormatException)
+            {
+            }
+        }
+        byte[] bytes = System.IO.File.ReadAllBytes(Assembly);
+        var module = ModuleDefinition.ReadModule(new System.IO.MemoryStream(bytes), new ReaderParameters { ReadSymbols = true });
+        var stale = module.AssemblyReferences
+            .Where(r => compiled.TryGetValue(r.Name, out var c) && c.Version != r.Version)
+            .ToList();
+        if (!Rewrite)
+        {
+            foreach (var r in stale)
+            {
+                Log.LogError("{0} references {1} {2}, but it was compiled against {3}.", Assembly, r.Name, r.Version, compiled[r.Name].Version);
+            }
+            return !Log.HasLoggedErrors;
+        }
+        if (stale.Count == 0)
+        {
+            return true;
+        }
+        foreach (var r in stale)
+        {
+            var wanted = compiled[r.Name];
+            var target = module.AssemblyReferences.FirstOrDefault(t => t.Name == r.Name && t.Version == wanted.Version);
+            if (target == null)
+            {
+                target = new AssemblyNameReference(wanted.Name, wanted.Version) { PublicKeyToken = wanted.PublicKeyToken, Culture = wanted.Culture };
+                module.AssemblyReferences.Add(target);
+            }
+            foreach (var type in module.GetTypeReferences().Where(t => t.Scope == r))
+            {
+                type.Scope = target;
+            }
+            module.AssemblyReferences.Remove(r);
+        }
+        // The symbols are embedded in the DLL (Directory.Build.props), so writing them back keeps them in step.
+        var writer = new WriterParameters { WriteSymbols = module.HasSymbols, SymbolWriterProvider = module.HasSymbols ? new Mono.Cecil.Cil.EmbeddedPortablePdbWriterProvider() : null };
+        string temp = Assembly + ".tmp";
+        module.Write(temp, writer);
+        module.Dispose();
+        System.IO.File.Replace(temp, Assembly, null);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="AlignNetcodeReferences" AfterTargets="DropUnpatched" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <AlignAssemblyReferences Assembly="$(TargetPath)" References="@(ReferencePathWithRefAssemblies)" Rewrite="true" />
+  </Target>
+  <!-- Fails the build when the mod still references an assembly at a version other than the one it compiled against. -->
+  <Target Name="VerifyNetcodeReferences" AfterTargets="DropUnpatched" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <AlignAssemblyReferences Assembly="$(TargetPath)" References="@(ReferencePathWithRefAssemblies)" Rewrite="false" />
+  </Target>
+  <!--#endif -->
+
+  <!-- The output doubles as an unpacked package, so a mod manager pointed at it shows the mod. A task writes the
+       manifest because WriteLinesToFile splits on semicolons and, on Linux, turns backslashes into slashes. -->
+  <UsingTask
+    TaskName="WriteDevManifest"
+    TaskFactory="RoslynCodeTaskFactory"
+    AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll"
+  >
+    <ParameterGroup>
+      <File ParameterType="System.String" Required="true" />
+      <Team ParameterType="System.String" Required="true" />
+      <Name ParameterType="System.String" Required="true" />
+      <Version ParameterType="System.String" Required="true" />
+      <Description ParameterType="System.String" Required="true" />
+      <Website ParameterType="System.String" />
+      <Dependencies ParameterType="Microsoft.Build.Framework.ITaskItem[]" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Linq" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        string Quote(string value) => "\"" + string.Concat(value.Select(c =>
+            c == '\\' ? "\\\\" : c == '"' ? "\\\"" : c < ' ' ? "\\u" + ((int)c).ToString("x4") : c.ToString())) + "\"";
+        string dependencies = string.Join(", ", (Dependencies ?? new Microsoft.Build.Framework.ITaskItem[0])
+            .Select(d => Quote(d.ItemSpec + "-" + d.GetMetadata("Version"))));
+        string json = "{\n"
+            + "  \"namespace\": " + Quote(Team) + ",\n"
+            + "  \"name\": " + Quote(Name) + ",\n"
+            + "  \"version_number\": " + Quote(Version) + ",\n"
+            + "  \"description\": " + Quote(Description) + ",\n"
+            + "  \"website_url\": " + Quote(Website ?? "") + ",\n"
+            + "  \"dependencies\": [" + dependencies + "]\n"
+            + "}\n";
+        if (!System.IO.File.Exists(File) || System.IO.File.ReadAllText(File) != json)
+        {
+            System.IO.File.WriteAllText(File, json);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="WriteDevManifest" AfterTargets="Build" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <WriteDevManifest
+      File="$(OutDir)manifest.json"
+      Team="$(ThunderstoreTeam)"
+      Name="$(ThunderstoreName)"
+      Version="$(Version)"
+      Description="$(ThunderstoreDescription)"
+      Website="$(RepositoryUrl)"
+      Dependencies="@(ThunderstoreDependency)"
+    />
+    <Copy SourceFiles="$(SolutionRoot)icon.png;$(SolutionRoot)README.md" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--#if (assets) -->
+  <ItemGroup>
+    <AssetBundle Include="$(SolutionRoot)assets/*.bundle" />
+    <ModFile Include="@(AssetBundle)" Destination="plugins/" />
+  </ItemGroup>
+  <Target Name="CopyAssetBundles" AfterTargets="Build" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <Copy SourceFiles="@(AssetBundle)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <!--#endif -->
+
+  <ItemGroup>
+    <ContentFile Include="$(SolutionRoot)content/**/*" Exclude="$(SolutionRoot)content/README.md" />
+    <ModFile Include="@(ContentFile)" Destination="plugins/%(RecursiveDir)" />
+  </ItemGroup>
+  <Target Name="CopyContent" AfterTargets="Build" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <Copy SourceFiles="@(ContentFile)" DestinationFiles="@(ContentFile->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="MapModFilesForThunderPipe" AfterTargets="Build" BeforeTargets="ThunderPipePack">
+    <ItemGroup>
+      <ThunderstoreFile Include="@(ModFile)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- BepInEx.Core's SkipBepinRefs leaves BepInEx and its libraries out of a build's output, since the game has them.
+       A test project runs outside the game, so it gets them back. -->
+  <Target Name="KeepBepInExForTests" AfterTargets="SkipBepinRefs" Condition="'$(IsTestingPlatformApplication)' == 'true'">
+    <ItemGroup>
+      <!-- Item filters, not a condition: dotnet new evaluates and drops a condition that names no property. -->
+      <ReferenceCopyLocalPaths Include="@(RuntimeCopyLocalItems->WithMetadataValue('NuGetPackageId', 'BepInEx.BaseLib'))" />
+      <ReferenceCopyLocalPaths Include="@(RuntimeCopyLocalItems->WithMetadataValue('NuGetPackageId', 'HarmonyX'))" />
+      <ReferenceCopyLocalPaths Include="@(RuntimeCopyLocalItems->WithMetadataValue('NuGetPackageId', 'Mono.Cecil'))" />
+      <ReferenceCopyLocalPaths Include="@(RuntimeCopyLocalItems->WithMetadataValue('NuGetPackageId', 'MonoMod.RuntimeDetour'))" />
+      <ReferenceCopyLocalPaths Include="@(RuntimeCopyLocalItems->WithMetadataValue('NuGetPackageId', 'MonoMod.Utils'))" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Publishing from your own computer reads the team's token from the OS keyring (DEVELOPING.md, Publishing). CI
+       passes it in ThunderstoreToken. The token never gets echoed. -->
+  <Target
+    Name="ThunderstoreTokenFromKeyring"
+    BeforeTargets="ThunderPipePublish"
+    Condition="'$(RunThunderPipePublishAfterBuild)' == 'true' And '$(ThunderstoreToken)' == ''"
+  >
+    <!-- Pass the token through a file, not the console, since console output ends up in detailed build logs. -->
+    <PropertyGroup>
+      <KeyringFile>$(IntermediateOutputPath)thunderstore-token.tmp</KeyringFile>
+    </PropertyGroup>
+    <Exec
+      Condition="$([MSBuild]::IsOSPlatform('Linux'))"
+      Command="umask 077; secret-tool lookup service thunderstore username &quot;$(ThunderstoreTeam)&quot; &gt; &quot;$(KeyringFile)&quot;"
+      EchoOff="true"
+      IgnoreExitCode="true"
+      StandardErrorImportance="low"
+    >
+      <Output TaskParameter="ExitCode" PropertyName="KeyringExit" />
+    </Exec>
+    <Exec
+      Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+      Command="powershell -NoProfile -Command &quot;$ErrorActionPreference = 'Stop'; [IO.File]::WriteAllText('$(KeyringFile)', (Get-StoredCredential -Target 'thunderstore:$(ThunderstoreTeam)').GetNetworkCredential().Password)&quot;"
+      EchoOff="true"
+      IgnoreExitCode="true"
+      StandardErrorImportance="low"
+    >
+      <Output TaskParameter="ExitCode" PropertyName="KeyringExit" />
+    </Exec>
+    <ReadLinesFromFile Condition="'$(KeyringExit)' == '0' And Exists('$(KeyringFile)')" File="$(KeyringFile)">
+      <Output TaskParameter="Lines" PropertyName="ThunderstoreToken" />
+    </ReadLinesFromFile>
+    <Delete Files="$(KeyringFile)" />
+    <Error
+      Condition="'$(ThunderstoreToken)' == ''"
+      Text="No Thunderstore token for team $(ThunderstoreTeam): store it in the keyring (DEVELOPING.md, Publishing) or set ThunderstoreToken."
+    />
+  </Target>
+
+  <!-- When Mortar installed a dependency, Config.Build.user.props points at that copy and lists it as a
+       MortarDependencyFolder item. Anything else (everything, in CI or a fresh clone) is downloaded from Thunderstore
+       into artifacts/ and referenced from there. BepInExPack is skipped: it's the loader itself, and the BepInEx
+       packages already compile against it. -->
+  <Target
+    Name="FetchThunderstoreDependencies"
+    BeforeTargets="ResolveAssemblyReferences"
+  >
+    <PropertyGroup>
+      <DependencyCache>$(SolutionRoot)artifacts/dependencies/</DependencyCache>
+    </PropertyGroup>
+    <ItemGroup>
+      <FetchedDependency
+        Include="@(ThunderstoreDependency);@(ThunderstoreSoftDependency)"
+        Exclude="BepInEx-BepInExPack;@(MortarDependencyFolder)"
+      />
+      <FetchedDependency>
+        <Folder>$(DependencyCache)%(Identity)-%(Version)/</Folder>
+        <Url>https://thunderstore.io/package/download/$([System.String]::Copy('%(Identity)').Replace('-', '/'))/%(Version)/</Url>
+      </FetchedDependency>
+    </ItemGroup>
+    <!-- A task batched over an empty list still runs once with empty values, so each one checks the list isn't empty.
+         The count goes through a property because dotnet new evaluates and drops a condition that names no property. -->
+    <PropertyGroup>
+      <FetchedCount>@(FetchedDependency->Count())</FetchedCount>
+      <HasFetchedDependency Condition="'$(FetchedCount)' != '0'">true</HasFetchedDependency>
+    </PropertyGroup>
+    <DownloadFile
+      Condition="'$(HasFetchedDependency)' == 'true' And !Exists('%(FetchedDependency.Folder)manifest.json')"
+      SourceUrl="%(FetchedDependency.Url)"
+      DestinationFolder="$(DependencyCache)"
+      DestinationFileName="%(FetchedDependency.Identity)-%(FetchedDependency.Version).zip"
+    />
+    <Unzip
+      Condition="'$(HasFetchedDependency)' == 'true' And !Exists('%(FetchedDependency.Folder)manifest.json')"
+      SourceFiles="$(DependencyCache)%(FetchedDependency.Identity)-%(FetchedDependency.Version).zip"
+      DestinationFolder="%(FetchedDependency.Folder)"
+    />
+    <ItemGroup Condition="'$(HasFetchedDependency)' == 'true'">
+      <Reference Include="%(FetchedDependency.Folder)**/*.dll" Private="false" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CheckModNames" BeforeTargets="PrepareForBuild" Condition="'$(IsThunderstorePackable)' == 'true'">
+    <Error
+      Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(ThunderstoreTeam)', '^(?!_)[A-Za-z0-9_]+(?&lt;!_)$'))"
+      Text="The Thunderstore team '$(ThunderstoreTeam)' may hold only letters, digits and underscores, not at either end."
+    />
+    <Error
+      Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(ThunderstoreName)', '^[A-Za-z0-9_]+$'))"
+      Text="The package name '$(ThunderstoreName)' may hold only letters, digits and underscores."
+    />
+    <Error
+      Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AssemblyName)', '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'))"
+      Text="The plugin id '$(AssemblyName)' must be dot-separated names of letters, digits and underscores."
+    />
+    <Error
+      Condition="$(ThunderstoreDescription.Length) &gt; 250"
+      Text="The description is $(ThunderstoreDescription.Length) characters; Thunderstore takes at most 250."
+    />
+  </Target>
+
+  <!-- Packing only runs in Release, so PublishTS in any other configuration would quietly publish nothing. -->
+  <Target Name="PublishNeedsRelease" BeforeTargets="Build" Condition="'$(PublishTS)' == 'true' And '$(Configuration)' != 'Release'">
+    <Error Text="Publishing to Thunderstore needs -c Release." />
+  </Target>
+
+  <!-- The version comes from the latest vX.Y.Z tag (0.1.0 before there is one). The file version's fourth number is
+       the number of commits since that tag. -->
+  <Target Name="VersionFromTag" BeforeTargets="BeforeCompile;GetAssemblyVersion;CoreCompile">
+    <!-- ConsoleToMSBuild captures stderr too, so a loader warning from git would end up in the version. -->
+    <PropertyGroup>
+      <GitNoStderr Condition="$([MSBuild]::IsOSPlatform('Windows'))">2&gt;nul</GitNoStderr>
+      <GitNoStderr Condition="'$(GitNoStderr)' == ''">2&gt;/dev/null</GitNoStderr>
+    </PropertyGroup>
+    <!-- A mod folder inside another repo has no tags of its own, and that repo's tags aren't its version. -->
+    <Exec
+      Command="git rev-parse --show-prefix $(GitNoStderr)"
+      WorkingDirectory="$(SolutionRoot)"
+      ConsoleToMSBuild="true"
+      IgnoreExitCode="true"
+      StandardOutputImportance="low"
+      StandardErrorImportance="low"
+    >
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitPrefix" />
+      <Output TaskParameter="ExitCode" PropertyName="PrefixExit" />
+    </Exec>
+    <!-- A release build uses the tag CI passes in; otherwise the latest tag is the version. The pattern is quoted so
+         the shell doesn't expand it against files in the folder. -->
+    <Exec
+      Condition="'$(ReleaseTag)' == '' And '$(PrefixExit)' == '0' And '$(GitPrefix)' == ''"
+      Command="git describe --tags --abbrev=0 --match &quot;v[0-9]*.[0-9]*.[0-9]*&quot; $(GitNoStderr)"
+      WorkingDirectory="$(SolutionRoot)"
+      ConsoleToMSBuild="true"
+      IgnoreExitCode="true"
+      StandardOutputImportance="low"
+      StandardErrorImportance="low"
+    >
+      <Output TaskParameter="ConsoleOutput" PropertyName="LatestTag" />
+      <Output TaskParameter="ExitCode" PropertyName="DescribeExit" />
+    </Exec>
+    <PropertyGroup>
+      <LatestTag Condition="'$(ReleaseTag)' != ''">$(ReleaseTag)</LatestTag>
+      <DescribeExit Condition="'$(ReleaseTag)' != ''">0</DescribeExit>
+      <!-- A tag like v1.3.0-rc1 isn't a valid Thunderstore or assembly version. -->
+      <TagIsVersion>$([System.Text.RegularExpressions.Regex]::IsMatch('$(LatestTag)', '^v\d+\.\d+\.\d+$'))</TagIsVersion>
+      <DescribeExit Condition="'$(TagIsVersion)' != 'True'">1</DescribeExit>
+    </PropertyGroup>
+    <Error Condition="'$(ReleaseTag)' != '' And '$(TagIsVersion)' != 'True'" Text="ReleaseTag $(ReleaseTag) is not vX.Y.Z." />
+    <PropertyGroup>
+      <Version Condition="'$(DescribeExit)' == '0'">$(LatestTag.TrimStart('v'))</Version>
+      <SinceTag Condition="'$(DescribeExit)' == '0'">$(LatestTag)..HEAD</SinceTag>
+      <SinceTag Condition="'$(DescribeExit)' != '0'">HEAD</SinceTag>
+      <ThunderstoreVersion>$(Version)</ThunderstoreVersion>
+    </PropertyGroup>
+    <Exec
+      Command="git rev-list --count $(SinceTag) $(GitNoStderr)"
+      WorkingDirectory="$(SolutionRoot)"
+      ConsoleToMSBuild="true"
+      IgnoreExitCode="true"
+      StandardOutputImportance="low"
+      StandardErrorImportance="low"
+    >
+      <Output TaskParameter="ConsoleOutput" PropertyName="CommitsSinceTag" />
+      <Output TaskParameter="ExitCode" PropertyName="CountExit" />
+    </Exec>
+    <PropertyGroup>
+      <FileVersion Condition="'$(CountExit)' == '0'">$(Version).$(CommitsSinceTag)</FileVersion>
+    </PropertyGroup>
+  </Target>
+
+  <!-- BepInPlugin needs constant strings, so write the plugin's id, name and version out as constants. -->
+  <Target Name="WritePluginInfo" AfterTargets="VersionFromTag" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <PluginInfoFile>$(IntermediateOutputPath)PluginInfo.g.cs</PluginInfoFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <_PluginInfoLine Include="namespace $(RootNamespace)%3B" />
+      <_PluginInfoLine Include="internal static class MyPluginInfo" />
+      <_PluginInfoLine Include="{" />
+      <_PluginInfoLine Include="    public const string Id = &quot;$(AssemblyName)&quot;%3B" />
+      <_PluginInfoLine Include="    public const string Name = &quot;$(AssemblyTitle)&quot;%3B" />
+      <_PluginInfoLine Include="    public const string Version = &quot;$(Version)&quot;%3B" />
+      <_PluginInfoLine Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(PluginInfoFile)" Lines="@(_PluginInfoLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(PluginInfoFile)" />
+      <FileWrites Include="$(PluginInfoFile)" />
+    </ItemGroup>
+  </Target>
+</Project>

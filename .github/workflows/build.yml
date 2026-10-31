@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Skip the template repo, and any repo made with "Use this template" that hasn't been through `dotnet new` yet.
+    # Their files still have template conditionals that won't compile. template.yml tests the template instead.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: tree:0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.x"
+          # Nothing gets restored in the template repo, and caching an empty NuGet folder fails the job.
+          cache: ${{ hashFiles('.template.config/template.json') == '' }}
+          cache-dependency-path: "**/packages.lock.json"
+      - run: dotnet restore --locked-mode
+        if: hashFiles('.template.config/template.json') == ''
+      - run: dotnet format --verify-no-changes --no-restore
+        if: hashFiles('.template.config/template.json') == ''
+      - run: dotnet build -c Release --no-restore
+        if: hashFiles('.template.config/template.json') == ''
+      - run: dotnet test -c Release --no-build
+        if: hashFiles('.template.config/template.json') == '' && hashFiles('tests/*/*.csproj') != ''
+
+  publish:
+    # Tags on the template repo only mark versions for Mortar.
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !github.event.repository.is_template }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Keep the write token out of .git/config while third-party build code runs.
+          persist-credentials: false
+          fetch-depth: 0
+          filter: tree:0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.x"
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+      - run: dotnet restore --locked-mode
+      - name: Pack and publish to Thunderstore
+        env:
+          ThunderstoreToken: ${{ secrets.THUNDERSTORE_API_TOKEN }}
+        # Use the pushed tag as the version, even if another version tag is on the same commit.
+        run: dotnet build -c Release --no-restore -p:PublishTS=true -p:ReleaseTag="$GITHUB_REF_NAME"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v head="## ${GITHUB_REF_NAME#v}" '$0 == head {on = 1; next} /^## / {on = 0} on' CHANGELOG.md >notes.md
+          gh release create "$GITHUB_REF_NAME" artifacts/thunderstore/release/*.zip --notes-file notes.md --verify-tag

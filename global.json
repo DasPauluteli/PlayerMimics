@@ -1,0 +1,13 @@
+{
+  "sdk": {
+    "version": "10.0.100",
+    "rollForward": "latestMajor"
+  },
+  "msbuild-sdks": {
+    "ThunderPipe.Sdk": "1.0.0",
+    "Evaisa.NetcodePatcher.MSBuild": "4.5.0"
+  },
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
+  }
+}
