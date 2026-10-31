@@ -10,7 +10,7 @@
   <PropertyGroup>
     <IsThunderstorePackable>true</IsThunderstorePackable>
     <ThunderstoreName>PlayerMimics</ThunderstoreName>
-    <ThunderstoreDescription>Placehoder description for now</ThunderstoreDescription>
+    <ThunderstoreDescription>Masked become impostor crewmates: player looks, voice cloning and an LLM brain.</ThunderstoreDescription>
     <ThunderstoreCommunities>lethal-company</ThunderstoreCommunities>
     <ThunderstoreCategories>mods;bepinex;serverside;monsters;audio;ai-generated</ThunderstoreCategories>
   </PropertyGroup>
@@ -25,10 +25,6 @@
     <ThunderstorePackageFile Include="$(SolutionRoot)icon.png" />
     <ThunderstorePackageFile Include="$(SolutionRoot)LICENSE" />
     <ThunderstoreDependency Include="BepInEx-BepInExPack" Version="5.4.2305" />
-    <ThunderstoreDependency Include="Mortar-ConfigSync" Version="0.1.1" />
-    <ThunderstoreDependency Include="Evaisa-LethalLib" Version="1.2.0" />
-    <Reference Include="$(MortarDependency_Evaisa_LethalLib)**/*.dll" Condition="'$(MortarDependency_Evaisa_LethalLib)' != ''" Private="false" />
-    <Reference Include="$(MortarDependency_Mortar_ConfigSync)**/*.dll" Condition="'$(MortarDependency_Mortar_ConfigSync)' != ''" Private="false" />
     <ThunderstoreSoftDependency Include="AinaVT-LethalConfig" Version="1.4.6" />
     <Reference Include="$(MortarDependency_AinaVT_LethalConfig)**/*.dll" Condition="'$(MortarDependency_AinaVT_LethalConfig)' != ''" Private="false" />
   </ItemGroup>
