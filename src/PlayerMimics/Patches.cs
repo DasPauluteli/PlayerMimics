@@ -26,11 +26,11 @@ internal static class MaskedPatches
         if (brain == null || __instance.isEnemyDead) return true;
         if (__instance.inSpecialAnimation) return false;
         brain.Tick();
-        // What EnemyAI.DoAIInterval does: walk to the destination and sync the position.
-        if (__instance.moveTowardsDestination && __instance.agent.enabled && __instance.agent.isOnNavMesh &&
-            __instance.destination != __instance.prevDestination && __instance.agent.SetDestination(__instance.destination))
+        // What EnemyAI.DoAIInterval does: walk to the destination (around known mines and webs) and sync the position.
+        if (__instance.moveTowardsDestination && __instance.agent.enabled && __instance.agent.isOnNavMesh)
         {
-            __instance.prevDestination = __instance.destination;
+            Vector3 go = brain.HazardSafeDestination(__instance.destination);
+            if (go != __instance.prevDestination && __instance.agent.SetDestination(go)) __instance.prevDestination = go;
         }
         __instance.SyncPositionToClients();
         return false;

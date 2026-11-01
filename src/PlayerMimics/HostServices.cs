@@ -224,11 +224,12 @@ internal sealed class HostServices : MonoBehaviour
 
     // ---- voice out
 
-    internal void Speak(MimicBrain brain, string text)
+    // started: a line /decide already began voicing (it wrote "say" first), so only the playback is left.
+    internal void Speak(MimicBrain brain, string text, string started = "")
     {
         if (Cfg.StreamLines.Value)
         {
-            StartCoroutine(StreamLine(brain, text));
+            StartCoroutine(StreamLine(brain, text, started));
             return;
         }
         var copied = brain.Copied;
@@ -251,18 +252,22 @@ internal sealed class HostServices : MonoBehaviour
     // Plays a line while the server is still making it. Everyone gets the audio as it comes; playback starts once the
     // server says enough is ready that the rest will arrive before it's needed (StreamLeadSeconds plus whatever slow
     // generation needs on top), so it never stutters. Old servers without that answer wait for the whole line.
-    private IEnumerator StreamLine(MimicBrain brain, string text)
+    private IEnumerator StreamLine(MimicBrain brain, string text, string startedStream = "")
     {
         var copied = brain.Copied;
         JObject? reply = null;
         bool answered = false;
-        Post("/speak_stream", LineRequest(brain, text), 15, r => { reply = r; answered = true; });
-        yield return new WaitUntil(() => answered);
-        string stream = reply?.Value<string>("stream") ?? "";
-        if (!(reply?.Value<bool?>("ready") ?? false) || stream.Length == 0)
+        string stream = startedStream;
+        if (stream.Length == 0)
         {
-            Plugin.Log.LogDebug($"No cloned voice for {copied.playerUsername} yet");
-            yield break;
+            Post("/speak_stream", LineRequest(brain, text), 15, r => { reply = r; answered = true; });
+            yield return new WaitUntil(() => answered);
+            stream = reply?.Value<string>("stream") ?? "";
+            if (!(reply?.Value<bool?>("ready") ?? false) || stream.Length == 0)
+            {
+                Plugin.Log.LogDebug($"No cloned voice for {copied.playerUsername} yet");
+                yield break;
+            }
         }
 
         int line = nextLineId++, seq = 0, offset = 0, failures = 0;
@@ -322,6 +327,18 @@ internal sealed class HostServices : MonoBehaviour
             yield return new WaitForSecondsRealtime(0.1f);
         }
     }
+
+    // What /decide needs to start voicing its line right away (only for streamed lines and with consent).
+    internal JObject? VoiceRequest(MimicBrain brain)
+    {
+        if (!Cfg.StreamLines.Value || !HasConsent(brain.Copied)) return null;
+        var r = LineRequest(brain, "");
+        r.Remove("text");
+        return r;
+    }
+
+    // Drops a line /decide started that the mod didn't say.
+    internal void CancelLine(string stream) => Post("/speak_cancel", new JObject { ["stream"] = stream }, 5, _ => { });
 
     // The voice is always the copied player's; "as_name" is the name the Masked goes by (Debug > MimicName).
     private static JObject LineRequest(MimicBrain brain, string text) => new()

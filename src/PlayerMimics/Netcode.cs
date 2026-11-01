@@ -116,6 +116,27 @@ internal sealed class ModNetwork : NetworkBehaviour
         });
     }
 
+    // A Masked walked into a spider web (the struggle sound) or tore through it. Vanilla only does this for players,
+    // and its version makes the spider chase the player who did it.
+    [ClientRpc]
+    internal void WebClientRpc(NetworkObjectReference spider, int trapID, bool broke)
+    {
+        if (!spider.TryGet(out NetworkObject obj)) return;
+        var s = obj.GetComponent<SandSpiderAI>();
+        if (s == null || trapID < 0 || trapID >= s.webTraps.Count || s.webTraps[trapID] == null) return;
+        var web = s.webTraps[trapID];
+        if (broke)
+        {
+            AudioSource.PlayClipAtPoint(s.breakWebSFX, web.centerOfWeb.position);
+            s.RemoveWeb(trapID);
+        }
+        else
+        {
+            web.webAudio.PlayOneShot(s.hitWebSFX);
+            WalkieTalkie.TransmitOneShotAudio(web.webAudio, s.hitWebSFX);
+        }
+    }
+
     [ClientRpc]
     internal void HideDeadBodyClientRpc(int playerId)
     {

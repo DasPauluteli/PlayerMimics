@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Masked walk around landmines and spider webs they notice, and set off the ones they miss (`HazardMistakes`)
+- Faster answers: the voice starts as soon as the line is written, talking to a Masked interrupts what it was thinking
+  about, shorter prompts, fewer idle decisions, and answers aren't dropped as repeats so easily
+- The AI server is now in the repo (`server/`), with setup and start scripts for Windows and Linux
+- New description with the features, optional mods and how hosts set up the AI server
+
 ## 0.1.1
 
 - fixed uncomitted files

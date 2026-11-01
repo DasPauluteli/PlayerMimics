@@ -144,6 +144,7 @@ internal sealed partial class MimicBrain
             sprintMultiplier = Mathf.Lerp(sprintMultiplier, 1f, 10f * dt);
         }
         crouching = wantCrouch && !isSprinting;
+        HazardStep();
 
         // Position updates 10 times a second while it moves, so other screens see a walk instead of hops.
         if (walking && Time.time - lastPositionSync >= 0.1f)
@@ -162,6 +163,7 @@ internal sealed partial class MimicBrain
         agent.speed = Current == Behaviour.Attack
             ? AttackSpeed / CarryWeight
             : Mathf.Min(Cfg.WalkSpeed.Value / (crouching ? 1.5f : 1f) * sprintMultiplier / CarryWeight, speedCap);
+        agent.speed *= HazardSpeedFactor;
     }
 
     private float CarryWeight => Disguise != null && Disguise.Inventory != null ? Disguise.Inventory.CarryWeight : 1f;

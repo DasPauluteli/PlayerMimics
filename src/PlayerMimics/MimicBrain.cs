@@ -70,9 +70,14 @@ internal sealed partial class MimicBrain : MonoBehaviour
     private bool reassureOnContact;
 
     private bool requestPending;
+    private bool pendingIsReply;
+    private int requestSeq; // the newest /decide; answers to older ones (replaced by a reply) are ignored
     private bool redecide;
     private float nextDecision;
+    private float lastDecisionAt = -100f;
     private bool urgent;
+    private int eventSerial, decidedSerial; // nothing new since the last decision: the next one can wait longer
+    private string earlyStream = "", earlyText = ""; // the server already started voicing this line
     private float lastLine = -100f;
     internal string LastReason = "";
     private string lastSay = "";
@@ -144,6 +149,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         }
         events.Add((Time.time, text));
         if (events.Count > 12) events.RemoveAt(0);
+        eventSerial++;
         if (decideNow) urgent = true;
     }
 
@@ -335,8 +341,9 @@ internal sealed partial class MimicBrain : MonoBehaviour
         if (Masked.isEnemyDead) return;
         float dt = Masked.AIIntervalTime;
         Perceive(dt);
+        NoticeHazards();
 
-        if (Time.time >= nextDecision || (urgent && Time.time >= nextDecision - Cfg.DecisionInterval.Value + 1.5f))
+        if (Time.time >= nextDecision || (urgent && Time.time >= lastDecisionAt + 1.5f))
         {
             Decide();
         }
@@ -449,10 +456,11 @@ internal sealed partial class MimicBrain : MonoBehaviour
 
     // ---- deciding
 
-    // Someone just talked to it: decide now instead of at the next tick, or right after the request in flight.
+    // Someone just talked to it: decide now instead of at the next tick. A request in flight that isn't an answer is
+    // replaced (the server stops it); one that is an answer finishes first.
     private void DecideSoon()
     {
-        if (requestPending)
+        if (requestPending && (replyTo == null || pendingIsReply))
         {
             redecide = true;
             return;
@@ -462,23 +470,49 @@ internal sealed partial class MimicBrain : MonoBehaviour
 
     private void Decide()
     {
+        bool wasUrgent = urgent;
         urgent = false;
-        nextDecision = Time.time + Cfg.DecisionInterval.Value * UnityEngine.Random.Range(0.8f, 1.2f);
+        // Nothing new happened, nobody to answer, nothing it has to say: no need to rethink as often.
+        bool quiet = !wasUrgent && eventSerial == decidedSerial && replyTo == null && Time.time >= mustTalkUntil;
+        nextDecision = Time.time + Cfg.DecisionInterval.Value * (quiet ? 2.5f : 1f) * UnityEngine.Random.Range(0.8f, 1.2f);
         if (Current == Behaviour.Emote && Time.time < behaviourUntil) return;
         var host = HostServices.Instance;
         if (Cfg.UseLlm.Value && host != null && host.AiOnline)
         {
-            if (requestPending || pendingRequests >= 3) return;
-            requestPending = true;
-            pendingRequests++;
             bool answering = replyTo != null;
+            bool replace = requestPending && answering && !pendingIsReply;
+            if (requestPending && !replace) return;
+            if (!replace && pendingRequests >= 3) return;
+            requestPending = true;
+            pendingIsReply = answering;
+            pendingRequests++;
+            int seq = ++requestSeq;
+            lastDecisionAt = Time.time;
+            decidedSerial = eventSerial;
             var body = BuildContext(out var view);
+            body["mimic"] = Masked.NetworkObjectId.ToString();
+            var voice = host.VoiceRequest(this);
+            if (voice != null) body["voice"] = voice;
             host.Post("/decide", body, 30, result =>
             {
-                requestPending = false;
                 pendingRequests--;
-                if (this == null || Masked == null || Masked.isEnemyDead) return;
-                if (result == null)
+                string stream = result?.Value<string>("stream") ?? "";
+                if (seq != requestSeq) // replaced by a newer one while it was thinking
+                {
+                    if (stream.Length > 0) host.CancelLine(stream);
+                    return;
+                }
+                requestPending = false;
+                if (this == null || Masked == null || Masked.isEnemyDead)
+                {
+                    if (stream.Length > 0) host.CancelLine(stream);
+                    return;
+                }
+                if (result != null && (result.Value<bool?>("stale") ?? false))
+                {
+                    // The server dropped it for a newer one we never sent (shouldn't happen); just think again soon.
+                }
+                else if (result == null)
                 {
                     Scripted();
                 }
@@ -488,9 +522,14 @@ internal sealed partial class MimicBrain : MonoBehaviour
                     {
                         Plugin.Log.LogInfo($"[decide] prompt:\n{result.Value<string>("prompt")}\n[decide] answer: {result.Value<string>("raw")}");
                     }
+                    string say = result.Value<string>("say") ?? "";
+                    earlyStream = stream;
+                    earlyText = say.Trim();
                     Apply(result.Value<string>("action") ?? "", result.Value<string>("target") ?? "", result.Value<string>("item") ?? "",
-                        result.Value<string>("say") ?? "", result.Value<string>("emote") ?? "", result.Value<string>("sign_text") ?? "",
+                        say, result.Value<string>("emote") ?? "", result.Value<string>("sign_text") ?? "",
                         result.Value<string>("reason") ?? "", view, answering);
+                    if (earlyStream.Length > 0) host.CancelLine(earlyStream); // started but not used
+                    earlyStream = earlyText = "";
                 }
                 if (redecide)
                 {
@@ -818,10 +857,14 @@ internal sealed partial class MimicBrain : MonoBehaviour
         replyTo = null;
         mustTalkWhy = "";
         nextSmallTalk = Time.time + SmallTalkDelay();
-        host.Speak(this, text);
+        string started = earlyStream.Length > 0 && text == earlyText ? earlyStream : "";
+        if (started.Length > 0) earlyStream = "";
+        host.Speak(this, text, started);
     }
 
-    private bool IsRepeat(string text) => saidRecently.Any(s => Similarity(s, text) >= 0.6f);
+    // Answers may sound like earlier lines ("yeah I got it" after "yeah I'm good"); only near-copies count there.
+    private bool IsRepeat(string text) =>
+        saidRecently.Any(s => Similarity(s, text) >= (replyTo != null ? 0.85f : 0.6f));
 
     // Share of words two lines have in common (0-1).
     private static float Similarity(string a, string b)

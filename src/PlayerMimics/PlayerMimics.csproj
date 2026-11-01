@@ -10,7 +10,7 @@
   <PropertyGroup>
     <IsThunderstorePackable>true</IsThunderstorePackable>
     <ThunderstoreName>PlayerMimics</ThunderstoreName>
-    <ThunderstoreDescription>Masked become impostor crewmates: player looks, voice cloning and an LLM brain.</ThunderstoreDescription>
+    <ThunderstoreDescription>Masked become impostor crewmates that look, move and (with consent) sound like your friends, run by a local AI. Host runs the free AI server. W.I.P</ThunderstoreDescription>
     <ThunderstoreCommunities>lethal-company</ThunderstoreCommunities>
     <ThunderstoreCategories>mods;bepinex;serverside;monsters;audio;ai-generated</ThunderstoreCategories>
   </PropertyGroup>

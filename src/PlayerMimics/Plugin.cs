@@ -66,6 +66,7 @@ internal static class Cfg
     internal static ConfigEntry<float> WalkSpeed = null!;
     internal static ConfigEntry<float> NameTagRange = null!;
     internal static ConfigEntry<bool> MonstersNoticeMimics = null!;
+    internal static ConfigEntry<float> HazardMistakes = null!;
 
     internal static ConfigEntry<bool> ReviveEnabled = null!;
     internal static ConfigEntry<int> ReviveChancePercent = null!;
@@ -117,6 +118,9 @@ internal static class Cfg
         MonstersNoticeMimics = c.Bind("Brain", "MonstersNoticeMimics", true,
             "Host only: roaming spiders, thumpers, slimes and giants go for a Masked that's near a player, so they don't " +
             "suspiciously ignore it. Masked always run from monsters like players do.");
+        HazardMistakes = c.Bind("Brain", "HazardMistakes", 0.12f,
+            "Host only: chance (0-1) that a Masked misses a landmine it could see, and walks onto it like a careless player " +
+            "(webs are missed a bit more often, and running doubles it). Ones it notices it walks around. 0 = never misses.");
 
         ReviveEnabled = c.Bind("Revive", "Enabled", true, "Host only: dead players can get back up as a Masked that copies them.");
         ReviveChancePercent = c.Bind("Revive", "ChancePercent", 100,
