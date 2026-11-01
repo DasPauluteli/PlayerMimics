@@ -91,8 +91,11 @@ internal sealed partial class MimicBrain
     private static bool Loose(GrabbableObject? item) =>
         item != null && item.itemProperties != null && item.grabbable && !item.deactivated && !item.isHeld && !item.isHeldByEnemy &&
         !item.isPocketed && !item.heldByPlayerOnServer && item.parentObject == null && item.NetworkObject != null &&
-        item.NetworkObject.IsSpawned && item is not RagdollGrabbableObject && item is not LungProp { isLungDocked: true } &&
+        item.NetworkObject.IsSpawned && item is not RagdollGrabbableObject &&
         (item.transform.parent == null || item.transform.parent.GetComponentInParent<DepositItemsDesk>() == null);
+
+    // The apparatus still in its machine: pulling it out cuts the facility's power.
+    private static bool DockedApparatus(GrabbableObject item) => item is LungProp { isLungDocked: true };
 
     // What it sees from where it stands, nearest first. Like a player looking around: things behind it only when close.
     private List<GrabbableObject> ItemsInView(int max = 6)
@@ -108,9 +111,11 @@ internal sealed partial class MimicBrain
             Vector3 flat = pos - transform.position;
             flat.y = 0f;
             if (d > 8f && flat.sqrMagnitude > 0.01f && Vector3.Angle(transform.forward, flat) > 110f) continue;
-            if (Physics.Linecast(eye, pos + Vector3.up * 0.2f, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
+            Vector3 aim = pos + Vector3.up * 0.2f;
+            if (Physics.Linecast(eye, aim, out RaycastHit hit, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore) &&
+                Vector3.Distance(hit.point, aim) > (DockedApparatus(item) ? 0.8f : 0.3f))
             {
-                continue;
+                continue; // blocked before it; the machine the apparatus sits in doesn't count
             }
             seen.Add((item, d));
         }
@@ -143,6 +148,7 @@ internal sealed partial class MimicBrain
         if (lb > 0) o["weight_lb"] = lb;
         if (p.twoHanded) o["two_handed"] = true;
         if (item.isInShipRoom) o["in_ship"] = "already collected";
+        if (DockedApparatus(item)) o["note"] = "plugged into the machine; pulling it out cuts the power to the building";
         if (!Inventory.CanTake(item, out string why)) o["cant_pick_up"] = why;
         return o;
     }
@@ -232,79 +238,127 @@ internal sealed partial class MimicBrain
         switch (action)
         {
             case "pick_up":
-            {
-                var item = ResolveSeen(itemRef, view);
-                if (item == null)
                 {
-                    AddEvent($"You tried to pick up \"{itemRef}\" but don't see it.", "noitem", 10f);
-                    return false;
-                }
-                if (!Inventory.CanTake(item, out string why))
-                {
-                    AddEvent($"You can't pick up the {item.itemProperties.itemName}: {why}.", "cantpick", 10f);
-                    return false;
-                }
-                if (Current == Behaviour.PickUp && taskItem == item) return true;
-                BeginTask(Behaviour.PickUp, null, 25f);
-                taskItem = item;
-                return true;
-            }
-            case "drop":
-            {
-                if (Inventory.IsEmpty) return false;
-                string r = itemRef.Trim().ToLowerInvariant();
-                bool all = r is "all" or "everything" or "all scrap" or "scrap" or "loot";
-                var item = all ? null : ResolveCarried(itemRef);
-                if (!all && item == null)
-                {
-                    AddEvent($"You tried to drop \"{itemRef}\" but you're not carrying it.", "nodrop", 10f);
-                    return false;
-                }
-                var to = target != null && SameSide(target) && Dist(target) < 30f ? target : null;
-                if (Current == Behaviour.Drop && taskItem == item && dropAll == all && giveTo == to) return true;
-                BeginTask(Behaviour.Drop, to, 20f);
-                taskItem = item;
-                dropAll = all;
-                dropScrapOnly = all && r != "all" && r != "everything";
-                giveTo = to;
-                stepAt = Time.time + Random.Range(0.15f, 0.4f);
-                return true;
-            }
-            case "hold":
-            {
-                var item = ResolveCarried(itemRef);
-                if (item == null) return false;
-                int slot = Inventory.SlotOf(item);
-                if (slot == Inventory.Current) return true;
-                if (Inventory.HandsFull)
-                {
-                    AddEvent($"You can't switch items while holding the {Inventory.Held!.itemProperties.itemName} with both hands; drop it first.",
-                        "twohands", 10f);
+                    var item = ResolveSeen(itemRef, view);
+                    if (item == null)
+                    {
+                        AddEvent($"You tried to pick up \"{itemRef}\" but don't see it.", "noitem", 10f);
+                        return false;
+                    }
+                    if (!Inventory.CanTake(item, out string why))
+                    {
+                        AddEvent($"You can't pick up the {item.itemProperties.itemName}: {why}.", "cantpick", 10f);
+                        return false;
+                    }
+                    if (Current == Behaviour.PickUp && taskItem == item) return true;
+                    BeginTask(Behaviour.PickUp, null, 25f);
+                    taskItem = item;
                     return true;
                 }
-                if (Time.time - Inventory.LastChange > 0.3f) ModNetwork.Instance?.MimicSwitch(Masked, slot);
-                return true; // a slot switch doesn't change what it's doing
-            }
+            case "drop":
+                {
+                    if (Inventory.IsEmpty) return false;
+                    string r = itemRef.Trim().ToLowerInvariant();
+                    bool all = r is "all" or "everything" or "all scrap" or "scrap" or "loot";
+                    var item = all ? null : ResolveCarried(itemRef);
+                    if (!all && item == null)
+                    {
+                        AddEvent($"You tried to drop \"{itemRef}\" but you're not carrying it.", "nodrop", 10f);
+                        return false;
+                    }
+                    var to = target != null && SameSide(target) && Dist(target) < 30f ? target : null;
+                    if (Current == Behaviour.Drop && taskItem == item && dropAll == all && giveTo == to) return true;
+                    BeginTask(Behaviour.Drop, to, 20f);
+                    taskItem = item;
+                    dropAll = all;
+                    dropScrapOnly = all && r != "all" && r != "everything";
+                    giveTo = to;
+                    stepAt = Time.time + Random.Range(0.15f, 0.4f);
+                    return true;
+                }
+            case "hold":
+                {
+                    var item = ResolveCarried(itemRef);
+                    if (item == null) return false;
+                    int slot = Inventory.SlotOf(item);
+                    if (slot == Inventory.Current) return true;
+                    if (Inventory.HandsFull)
+                    {
+                        AddEvent($"You can't switch items while holding the {Inventory.Held!.itemProperties.itemName} with both hands; drop it first.",
+                            "twohands", 10f);
+                        return true;
+                    }
+                    if (Time.time - Inventory.LastChange > 0.3f) ModNetwork.Instance?.MimicSwitch(Masked, slot);
+                    return true; // a slot switch doesn't change what it's doing
+                }
             case "go_inside":
             case "go_outside":
-            {
-                if ((action == "go_inside") != Masked.isOutside) return false; // already on that side
-                var door = DoorsHere().OrderBy(d => Vector3.Distance(transform.position, d.entrancePoint.position) + (d.entranceId == 0 ? 0f : 10f))
-                    .FirstOrDefault();
-                if (door == null) return false;
-                if (Current == Behaviour.Entrance) return true;
-                BeginTask(Behaviour.Entrance, null, 60f);
-                taskDoor = door;
-                return true;
-            }
+                {
+                    if ((action == "go_inside") != Masked.isOutside) return false; // already on that side
+                    var door = DoorsHere().OrderBy(d => Vector3.Distance(transform.position, d.entrancePoint.position) + (d.entranceId == 0 ? 0f : 10f))
+                        .FirstOrDefault();
+                    if (door == null) return false;
+                    if (Current == Behaviour.Entrance) return true;
+                    BeginTask(Behaviour.Entrance, null, 60f);
+                    taskDoor = door;
+                    return true;
+                }
             case "go_to_ship":
-            {
-                if (Current == Behaviour.GoToShip) return true;
-                BeginTask(Behaviour.GoToShip, null, 150f);
-                return true;
-            }
+                {
+                    if (Current == Behaviour.GoToShip) return true;
+                    BeginTask(Behaviour.GoToShip, null, 150f);
+                    return true;
+                }
         }
         return false;
+    }
+
+    // ---- grabbing loot in passing
+
+    private float lastPassingGrab = -100f;
+    private readonly HashSet<GrabbableObject> passedOver = new();
+
+    // AI tick: walking around with the others and there's scrap right next to it: it picks it up, like a player
+    // would. Not when someone else is closer to it, not the apparatus (that's a decision), not what's already in the
+    // ship, and every piece gets one chance, so it doesn't hoover up everything.
+    private void GrabScrapInPassing()
+    {
+        if (!Cfg.GrabScrapNearPlayers.Value || Current is not (Behaviour.BlendIn or Behaviour.Follow or Behaviour.Wander) ||
+            Fleeing || HuntingKnower || Masked.inSpecialAnimation || Time.time - lastPassingGrab < 12f ||
+            Inventory.HandsFull || Inventory.CarryWeight > 1.35f || InShipRoom())
+        {
+            return;
+        }
+        var crew = AlivePlayers().Where(p => IsAudience(p) && SameSide(p) && Dist(p) < 12f).ToList();
+        if (crew.Count == 0) return;
+        foreach (var item in ItemsInView(4))
+        {
+            if (passedOver.Contains(item)) continue;
+            Vector3 pos = item.transform.position;
+            float mine = Vector3.Distance(pos, transform.position);
+            if (mine > 3.5f) continue;
+            if (!item.itemProperties.isScrap || item.isInShipRoom || item.isInElevator || DockedApparatus(item)) continue;
+            if (!Inventory.CanTake(item, out _)) continue;
+            if (crew.Any(p => Vector3.Distance(p.transform.position, pos) < mine)) continue; // theirs to take
+            passedOver.Add(item);
+            if (Random.value > 0.7f) continue;
+            lastPassingGrab = Time.time;
+            Plugin.Log.LogDebug($"{Copied.playerUsername}'s Masked grabs the {item.itemProperties.itemName} in passing");
+            BeginTask(Behaviour.PickUp, null, 12f);
+            taskItem = item;
+            stepAt = Time.time + Random.Range(0.2f, 0.5f);
+            return;
+        }
+    }
+
+    // A Masked that spawned on its own starts with a piece of scrap in its hands, like someone who's been looting.
+    internal void GiveStartingItem(GrabbableObject item)
+    {
+        int slot = Inventory.FreeSlotFor(item);
+        if (slot < 0 || ModNetwork.Instance == null) return;
+        item.heldByPlayerOnServer = true;
+        ModNetwork.Instance.MimicGrab(Masked, item, slot);
+        passedOver.Add(item);
     }
 
     private void BeginTask(Behaviour b, PlayerControllerB? target, float seconds)

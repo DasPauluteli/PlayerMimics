@@ -171,7 +171,9 @@ internal sealed partial class MimicBrain : MonoBehaviour
         }
         if (CoverBlown || Current == Behaviour.Attack) { reason = "already attacking"; return true; }
         if (Time.time < threatenedUntil) { reason = "you were attacked"; return true; }
+        if (AliveFoundOut().Any()) { reason = "they figured out what you are"; return true; }
         if (MaxSuspicion() >= Cfg.CoverBlownSuspicion.Value) { reason = "your cover is about to blow"; return true; }
+        if (AloneLongEnough) { reason = $"{aloneWith!.playerUsername} is alone with you and nobody else would see"; return true; }
         if (SecondsWithGroup >= Cfg.MinSecondsBeforeAttack.Value) { reason = "you've spent enough time with them"; return true; }
         reason = $"too early: blend in for {Mathf.CeilToInt(Cfg.MinSecondsBeforeAttack.Value - SecondsWithGroup)} more seconds";
         return false;
@@ -250,7 +252,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         }
     }
 
-    private static readonly string[] SuspiciousWords =
+    private static readonly string[] suspiciousWords =
     {
         "mimic", "masked", "fake", "impostor", "imposter", "monster", "not real", "are you real", "prove", "is that you",
         "not you", "who are you", "that's not", "thats not", "sus",
@@ -286,9 +288,10 @@ internal sealed partial class MimicBrain : MonoBehaviour
         lastHeardAt = Time.time;
         if (Dist(speaker) < 20f) GlanceAt(speaker);
         string lower = text.ToLowerInvariant();
-        bool suspicious = SuspiciousWords.Any(lower.Contains);
+        bool suspicious = suspiciousWords.Any(lower.Contains);
         bool named = NameTokens(Name).Any(lower.Contains);
         if (suspicious) AddSuspicion(speaker, named || Dist(speaker) < 10f ? 0.3f : 0.15f);
+        HeardWarning(speaker, lower, suspicious);
         string who = speaker == Copied && !Renamed ? $"The real {speaker.playerUsername} (not you)" : speaker.playerUsername;
         AddEvent($"{who} said: \"{text}\"");
         // Worth an answer if it was said close by or to it by name, and not clearly to someone else.
@@ -342,6 +345,9 @@ internal sealed partial class MimicBrain : MonoBehaviour
         float dt = Masked.AIIntervalTime;
         Perceive(dt);
         NoticeHazards();
+        HuntIfFoundOut();
+        GrabScrapInPassing();
+        Ambush();
 
         if (Time.time >= nextDecision || (urgent && Time.time >= lastDecisionAt + 1.5f))
         {
@@ -366,7 +372,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
 
         foreach (var key in suspicion.Keys.ToList())
         {
-            suspicion[key] = knowsTruth.Contains(key) ? 1f : Mathf.Max(0f, suspicion[key] - 0.015f * dt);
+            suspicion[key] = knowsTruth.Contains(key) ? 1f : Mathf.Max(0f, suspicion[key] - 0.005f * dt);
         }
 
         foreach (var p in alive)
@@ -391,8 +397,10 @@ internal sealed partial class MimicBrain : MonoBehaviour
                 }
             }
             // Keeping their distance while watching you closely is suspicious.
-            if (d > 6f && d < 14f && SeesMe(p, 14f, 10f) && Current != Behaviour.Flee) AddSuspicion(p, 0.01f * dt);
+            if (d > 6f && d < 14f && SeesMe(p, 14f, 10f) && Current != Behaviour.Flee) AddSuspicion(p, 0.03f * dt);
         }
+
+        WatchRunners(alive, dt);
 
         // Being seen next to the real player is the worst giveaway.
         if (!Copied.isPlayerDead && Copied.isPlayerControlled && SameSide(Copied) && Dist(Copied) < 30f && !Solo && !Renamed)
@@ -437,7 +445,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
             }
         }
 
-        if (Current == Behaviour.Attack)
+        if (Current == Behaviour.Attack && lunging)
         {
             foreach (var p in alive)
             {
@@ -566,6 +574,8 @@ internal sealed partial class MimicBrain : MonoBehaviour
             : Copied.isPlayerDead || !Copied.isPlayerControlled
             ? $"the real {Copied.playerUsername} is dead (only you know); never mention dying or coming back"
             : !SameSide(Copied) ? $"the real {Copied.playerUsername} is alive, {GameContext.Where(Copied)}"
+            : Solo && FoundOutBy(Copied) ? $"the real {Copied.playerUsername} is the only other player here, {Dist(Copied):0} m " +
+                                           "away, and they figured out you're a Masked"
             : Solo ? $"the real {Copied.playerUsername} is the only other player here, {Dist(Copied):0} m away. They're the friend you're " +
                      "playing with this round: stay with them, talk to them and answer them like a friend would"
             : $"the real {Copied.playerUsername} is alive, {Dist(Copied):0} m away from you";
@@ -610,7 +620,9 @@ internal sealed partial class MimicBrain : MonoBehaviour
                 ["real_player"] = real,
                 ["revived"] = Disguise.Revived,
                 ["health"] = Masked.enemyHP,
-                ["cover"] = CoverBlown ? "blown: someone saw you attack, they know what you are" : "intact",
+                ["cover"] = CoverBlown ? "blown: someone saw you attack, they know what you are"
+                    : AliveFoundOut().Any() ? $"blown: {string.Join(", ", AliveFoundOut().Select(p => p.playerUsername))} figured out you're a Masked"
+                    : "intact",
                 ["out_of_breath"] = exhausted,
                 ["seconds_with_group"] = Mathf.RoundToInt(SecondsWithGroup),
             },
@@ -721,7 +733,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         var forced = ParseAction(Cfg.ForceBehaviour.Value.Trim().ToLowerInvariant());
 
         // Items and doors (MimicItems.cs).
-        if (!Fleeing && forced == null && StartTask(action, itemRef, target, view))
+        if (!Fleeing && forced == null && !HuntingKnower && StartTask(action, itemRef, target, view))
         {
             if (!string.IsNullOrWhiteSpace(say)) TrySay(say);
             PushOverlay();
@@ -735,6 +747,11 @@ internal sealed partial class MimicBrain : MonoBehaviour
         {
             b = Behaviour.Flee; // a reflex (monster, sign) beats the LLM
             target = fleeFrom;
+        }
+        else if (HuntingKnower && forced == null)
+        {
+            b = Behaviour.Attack; // going after someone who knows what it is
+            target = Target;
         }
         if (target == null && b is Behaviour.Follow or Behaviour.Stare or Behaviour.Lure or Behaviour.Attack)
         {
@@ -825,12 +842,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         if (b != Behaviour.Emote) emote = 0;
         ResetMovementPlan();
         if (b == Behaviour.Lure && target != null) lurePoint = PickLurePoint(target);
-        if (b == Behaviour.Attack)
-        {
-            if (!CoverBlown) Plugin.Log.LogInfo($"{Copied.playerUsername}'s Masked attacks {target?.playerUsername}");
-            CoverBlown = true;
-            attackWitnesses.Clear();
-        }
+        if (b == Behaviour.Attack && previous != Behaviour.Attack) StartAttackPhase(); // the cover goes at the lunge (MimicAggression)
         if (b is Behaviour.Stare or Behaviour.Emote && target != null)
         {
             LookAtPlayer(target, duration > 0f ? duration : 5f);
@@ -898,6 +910,8 @@ internal sealed partial class MimicBrain : MonoBehaviour
         if (Cfg.ShowBrainOverlay.Value && Time.time - lastOverlay > 1f) PushOverlay();
     }
 
+    private string AttackLine() { string a = AttackOverlay(); return a.Length > 0 ? a + "\n" : ""; }
+
     private void PushOverlay()
     {
         if (!Cfg.ShowBrainOverlay.Value) return;
@@ -908,6 +922,6 @@ internal sealed partial class MimicBrain : MonoBehaviour
         Disguise.DebugText =
             $"{(Renamed ? $"{Name} ({Copied.playerUsername})" : Copied.playerUsername)} | {CurrentAction()} {Target?.playerUsername}{(heading.Length > 0 ? " -> " + heading : "")}\n" +
             $"with group {SecondsWithGroup:0}s | {why}\nstamina {stamina * 100f:0}%{(exhausted ? " (out of breath)" : "")} | " +
-            $"talk: {(talk ? "yes" : "no")} ({talkWhy}) | sus {sus}\n{ItemsOverlay()}{LastReason}\n{(lastSay.Length > 0 ? "\"" + lastSay + "\"" : "")}";
+            $"talk: {(talk ? "yes" : "no")} ({talkWhy}) | sus {sus}\n{HabitOverlay()}{AttackLine()}{ItemsOverlay()}{LastReason}\n{(lastSay.Length > 0 ? "\"" + lastSay + "\"" : "")}";
     }
 }

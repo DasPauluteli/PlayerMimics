@@ -23,6 +23,7 @@ internal static class MaskedPatches
     private static bool DoAIInterval(MaskedPlayerEnemy __instance)
     {
         var brain = __instance.GetComponent<MimicBrain>();
+        if (brain == null && HostServices.Instance != null && HostServices.Instance.SettingUp(__instance)) return false;
         if (brain == null || __instance.isEnemyDead) return true;
         if (__instance.inSpecialAnimation) return false;
         brain.Tick();
@@ -155,6 +156,82 @@ internal static class EnemyPatches
 
     private static bool Own(Renderer r) =>
         r.GetComponentInParent<PlayerControllerB>() == null && r.GetComponentInParent<GrabbableObject>() == null;
+}
+
+[HarmonyPatch(typeof(EnemyAI))]
+internal static class EnemyStateSoundPatches
+{
+    // Vanilla state sounds (the Masked laugh) would give a disguised Masked away.
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(EnemyAI.PlayAudioOfCurrentState))]
+    private static bool PlayAudioOfCurrentState(EnemyAI __instance) => MimicDisguise.Of(__instance) == null;
+}
+
+[HarmonyPatch(typeof(RandomPeriodicAudioPlayer))]
+internal static class MaskSoundPatches
+{
+    private static readonly Dictionary<RandomPeriodicAudioPlayer, MaskedPlayerEnemy?> owners = new();
+
+    // The masks on a Masked laugh and cry now and then (the host rolls it on the very first frame after spawning,
+    // before the disguise is on). Ours are hidden, so they stay quiet; only Masked left vanilla keep the sound.
+    [HarmonyPrefix]
+    [HarmonyPatch("Update")]
+    private static bool Update(RandomPeriodicAudioPlayer __instance)
+    {
+        if (!owners.TryGetValue(__instance, out var masked))
+        {
+            if (owners.Count > 256) owners.Clear(); // old ones from past rounds
+            owners[__instance] = masked = __instance.GetComponentInParent<MaskedPlayerEnemy>();
+        }
+        if (masked == null) return true;
+        return HostServices.Instance == null || HostServices.Instance.LeftVanilla(masked);
+    }
+}
+
+[HarmonyPatch(typeof(EntranceTeleport))]
+internal static class EntrancePatches
+{
+    // The entrance's "[Near activity detected!]" check, as in vanilla, except that disguised Masked don't count:
+    // a door warning about one would give it away.
+    [HarmonyPrefix]
+    [HarmonyPatch("Update")]
+    private static bool Update(EntranceTeleport __instance)
+    {
+        var t = __instance;
+        if (t.triggerScript == null || !t.isEntranceToBuilding) return false;
+        if (t.checkForEnemiesInterval > 0f)
+        {
+            t.checkForEnemiesInterval -= Time.deltaTime;
+            return false;
+        }
+        if (!t.gotExitPoint)
+        {
+            if (t.FindExitPoint()) t.gotExitPoint = true;
+            return false;
+        }
+        t.checkForEnemiesInterval = 1f;
+        bool near = false;
+        foreach (var e in RoundManager.Instance.SpawnedEnemies)
+        {
+            if (e == null || e.isEnemyDead || MimicDisguise.Of(e) != null) continue;
+            if (Vector3.Distance(e.transform.position, t.exitScript.entrancePoint.transform.position) < 7.7f)
+            {
+                near = true;
+                break;
+            }
+        }
+        if (near && !t.enemyNearLastCheck)
+        {
+            t.enemyNearLastCheck = true;
+            t.triggerScript.hoverTip = "[Near activity detected!]";
+        }
+        else if (t.enemyNearLastCheck)
+        {
+            t.enemyNearLastCheck = false;
+            t.triggerScript.hoverTip = "Enter: [LMB]";
+        }
+        return false;
+    }
 }
 
 [HarmonyPatch(typeof(PlayerControllerB))]

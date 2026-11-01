@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using GameNetcodeStuff;
 using TMPro;
@@ -41,6 +42,9 @@ internal sealed class MimicDisguise : MonoBehaviour
     private float lastFootstep;
     private bool wasCrouching;
     private float pitch;
+    private Coroutine? jumpRoutine;
+    private float jumpHeight;
+    private float appliedJump;
     private float noiseSeed;
     private readonly HashSet<string> animParams = new();
     private float holdWeight;
@@ -547,6 +551,61 @@ internal sealed class MimicDisguise : MonoBehaviour
         // Monsters that hunt by sound hear it like a player's step.
         RoundManager.Instance.PlayAudibleNoise(transform.position, State.Sprinting ? 22f : State.Crouching ? 8f : 17f,
             State.Sprinting ? 0.6f : State.Crouching ? 0.2f : 0.4f, 0, Masked.isInsidePlayerShip && StartOfRound.Instance.hangarDoorsClosed, 7);
+    }
+
+    // ---- jumping (the host sends it when its player's habits include a jump)
+
+    // The player jump: a short crouch before take-off, then up and down again. Only the model moves; the Masked
+    // itself stays on the ground for the AI and the network.
+    internal void Jump()
+    {
+        if (!usingPlayerAnimations || inKillPose || Masked.isEnemyDead || State.Crouching) return;
+        if (jumpRoutine != null) StopCoroutine(jumpRoutine);
+        jumpRoutine = StartCoroutine(JumpRoutine());
+    }
+
+    private IEnumerator JumpRoutine()
+    {
+        SetBool("Jumping", true);
+        PlayOneShot(JumpClip());
+        yield return new WaitForSeconds(0.15f);
+        float v = 6.5f; // about 0.9 m up, half a second in the air
+        jumpHeight = 0f;
+        do
+        {
+            yield return null;
+            float dt = Time.deltaTime;
+            jumpHeight = Mathf.Max(0f, jumpHeight + v * dt);
+            v -= 24f * dt;
+        } while (jumpHeight > 0f && !Masked.isEnemyDead && !inKillPose);
+        jumpHeight = 0f;
+        SetBool("Jumping", false);
+        PlayOneShot(StartOfRound.Instance.playerHitGroundSoft);
+        jumpRoutine = null;
+    }
+
+    // Lifts the model by the change since last frame, so it lands exactly where it started.
+    private void LateUpdate()
+    {
+        if (animator == null || animator.transform == transform || Mathf.Approximately(jumpHeight, appliedJump)) return;
+        animator.transform.position += Vector3.up * (jumpHeight - appliedJump);
+        appliedJump = jumpHeight;
+    }
+
+    private AudioClip? JumpClip()
+    {
+        var unlockables = StartOfRound.Instance.unlockablesList.unlockables;
+        int suit = Player != null ? Player.currentSuitID : -1;
+        if (suit >= 0 && suit < unlockables.Count && unlockables[suit].jumpAudio != null) return unlockables[suit].jumpAudio;
+        return StartOfRound.Instance.playerJumpSFX;
+    }
+
+    private void PlayOneShot(AudioClip? clip)
+    {
+        if (clip == null || Masked.movementAudio == null) return;
+        Masked.movementAudio.pitch = 1f;
+        Masked.movementAudio.PlayOneShot(clip);
+        WalkieTalkie.TransmitOneShotAudio(Masked.movementAudio, clip);
     }
 
     internal void Clap()

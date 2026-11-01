@@ -67,6 +67,11 @@ internal static class Cfg
     internal static ConfigEntry<float> NameTagRange = null!;
     internal static ConfigEntry<bool> MonstersNoticeMimics = null!;
     internal static ConfigEntry<float> HazardMistakes = null!;
+    internal static ConfigEntry<bool> CopyHabits = null!;
+    internal static ConfigEntry<float> Aggression = null!;
+    internal static ConfigEntry<float> AloneAttackSeconds = null!;
+    internal static ConfigEntry<bool> GrabScrapNearPlayers = null!;
+    internal static ConfigEntry<bool> SpawnWithScrap = null!;
 
     internal static ConfigEntry<bool> ReviveEnabled = null!;
     internal static ConfigEntry<int> ReviveChancePercent = null!;
@@ -121,6 +126,22 @@ internal static class Cfg
         HazardMistakes = c.Bind("Brain", "HazardMistakes", 0.12f,
             "Host only: chance (0-1) that a Masked misses a landmine it could see, and walks onto it like a careless player " +
             "(webs are missed a bit more often, and running doubles it). Ones it notices it walks around. 0 = never misses.");
+        CopyHabits = c.Bind("Brain", "CopyHabits", true,
+            "Host only: records how each player looks around, crouches, jumps and sprints during a round, and a Masked " +
+            "copying them replays that in the same kind of situation (standing or walking, inside, with others, near loot, " +
+            "talking). Nothing is saved; it starts over every game.");
+        Aggression = c.Bind("Brain", "Aggression", 0.35f,
+            "Host only: chance (0-1) per 10 seconds that a Masked goes for someone who's alone with it with nobody else " +
+            "around, even if they don't suspect it (twice that when their back is turned). 0 = only the AI decides.");
+        AloneAttackSeconds = c.Bind("Brain", "AloneAttackSeconds", 30f,
+            "Host only: time near the crew before a Masked may attack someone who's alone with it. MinSecondsBeforeAttack " +
+            "still applies to attacking in front of others.");
+        GrabScrapNearPlayers = c.Bind("Brain", "GrabScrapNearPlayers", true,
+            "Host only: a Masked walking around with players picks up scrap it passes right by (not the apparatus, and " +
+            "not when a player is closer to it), like players loot.");
+        SpawnWithScrap = c.Bind("Brain", "SpawnWithScrap", true,
+            "Host only: a Masked that spawns on its own (not a revived player or the spawn key) starts out holding a " +
+            "piece of scrap from the moon, like someone who's been looting.");
 
         ReviveEnabled = c.Bind("Revive", "Enabled", true, "Host only: dead players can get back up as a Masked that copies them.");
         ReviveChancePercent = c.Bind("Revive", "ChancePercent", 100,

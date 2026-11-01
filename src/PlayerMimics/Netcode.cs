@@ -218,6 +218,14 @@ internal sealed class ModNetwork : NetworkBehaviour
 
     // ---- debug
 
+    internal void MimicJump(MaskedPlayerEnemy masked) => MimicJumpClientRpc(new NetworkObjectReference(masked.NetworkObject));
+
+    [ClientRpc]
+    private void MimicJumpClientRpc(NetworkObjectReference masked)
+    {
+        if (masked.TryGet(out NetworkObject obj)) obj.GetComponent<MimicDisguise>()?.Jump();
+    }
+
     [ClientRpc]
     internal void DebugTextClientRpc(NetworkObjectReference masked, string text)
     {

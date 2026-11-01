@@ -16,8 +16,8 @@ internal sealed partial class MimicBrain
     private const float NoticeRange = 8f;         // hazards further away aren't looked at yet
 
     // Shared by all brains: found again every couple of seconds.
-    private static readonly List<Landmine> Mines = new();
-    private static readonly List<SandSpiderWebTrap> Webs = new();
+    private static readonly List<Landmine> mines = new();
+    private static readonly List<SandSpiderWebTrap> webs = new();
     private static float hazardsFoundAt = -100f;
 
     private readonly HashSet<Object> noticedHazards = new();
@@ -35,14 +35,14 @@ internal sealed partial class MimicBrain
     {
         if (Time.time - hazardsFoundAt < 2f) return;
         hazardsFoundAt = Time.time;
-        Mines.Clear();
-        Mines.AddRange(Object.FindObjectsOfType<Landmine>());
-        Webs.Clear();
+        mines.Clear();
+        mines.AddRange(Object.FindObjectsOfType<Landmine>());
+        webs.Clear();
         foreach (var spider in Object.FindObjectsOfType<SandSpiderAI>())
         {
             foreach (var web in spider.webTraps)
             {
-                if (web != null) Webs.Add(web);
+                if (web != null) webs.Add(web);
             }
         }
     }
@@ -65,12 +65,12 @@ internal sealed partial class MimicBrain
         FindHazards();
         bool hurried = isSprinting || Current is Behaviour.Attack or Behaviour.Flee;
         float miss = Mathf.Clamp01(Cfg.HazardMistakes.Value * (hurried ? 2.5f : 1f));
-        foreach (var m in Mines)
+        foreach (var m in mines)
         {
             if (!Live(m) || noticedHazards.Contains(m)) continue;
             Look(m, m.transform.position + Vector3.up * 0.1f, miss);
         }
-        foreach (var w in Webs)
+        foreach (var w in webs)
         {
             if (w == null || noticedHazards.Contains(w)) continue;
             Look(w, w.centerOfWeb.position, Mathf.Clamp01(miss * 1.8f));
@@ -236,7 +236,7 @@ internal sealed partial class MimicBrain
         }
         else
         {
-            foreach (var m in Mines)
+            foreach (var m in mines)
             {
                 if (!Live(m) || m.pressMineDebounceTimer > 0f) continue;
                 Vector3 c = m.transform.position;
@@ -261,7 +261,7 @@ internal sealed partial class MimicBrain
             return;
         }
         Vector3 chest = pos + Vector3.up * 0.9f;
-        foreach (var w in Webs)
+        foreach (var w in webs)
         {
             if (w == null || w.mainScript == null || trippedWebs.Contains(w)) continue;
             if (Vector3.Distance(w.centerOfWeb.position, chest) > 8f) continue;

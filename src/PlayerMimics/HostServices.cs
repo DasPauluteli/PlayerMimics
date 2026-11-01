@@ -44,6 +44,7 @@ internal sealed class HostServices : MonoBehaviour
         AiOnline = false;
         nextHealthCheck = 0f;
         wasInShipPhase = null;
+        HabitRecorder.Clear();
     }
 
     // ---- players and consent
@@ -84,6 +85,7 @@ internal sealed class HostServices : MonoBehaviour
             nextSightCheck = Time.time + 0.25f;
             TrackSightings();
         }
+        HabitRecorder.Sample();
         bool inShip = StartOfRound.Instance.inShipPhase;
         if (wasInShipPhase != inShip)
         {
@@ -375,7 +377,29 @@ internal sealed class HostServices : MonoBehaviour
 
     // ---- Masked setup
 
-    internal void OnMaskedStart(MaskedPlayerEnemy masked) => StartCoroutine(SetupWhenReady(masked));
+    // Masked being set up (host): their vanilla AI waits meanwhile, or it may spot a player, switch to its chase state
+    // and play the Masked laugh for everyone before the disguise is on.
+    private readonly Dictionary<MaskedPlayerEnemy, float> settingUp = new();
+
+    // Masked we left vanilla on purpose (nobody to copy): only these may make their Masked noises.
+    private readonly HashSet<MaskedPlayerEnemy> leftVanilla = new();
+
+    internal bool LeftVanilla(MaskedPlayerEnemy masked) => leftVanilla.Contains(masked);
+
+    internal bool SettingUp(MaskedPlayerEnemy masked) =>
+        settingUp.TryGetValue(masked, out float since) && Time.time - since < 5f;
+
+    internal void OnMaskedStart(MaskedPlayerEnemy masked)
+    {
+        settingUp[masked] = Time.time;
+        StartCoroutine(SetUp(masked));
+    }
+
+    private IEnumerator SetUp(MaskedPlayerEnemy masked)
+    {
+        yield return StartCoroutine(SetupWhenReady(masked));
+        settingUp.Remove(masked);
+    }
 
     private IEnumerator SetupWhenReady(MaskedPlayerEnemy masked)
     {
@@ -384,6 +408,7 @@ internal sealed class HostServices : MonoBehaviour
         if (masked == null || masked.isEnemyDead || ModNetwork.Instance == null || masked.GetComponent<MimicDisguise>() != null) yield break;
         PlayerControllerB? player = null;
         bool revived = false;
+        bool natural = false; // the game spawned it, not a revive or the spawn key
         if (pendingCopies.TryGetValue(masked.NetworkObjectId, out var pending))
         {
             pendingCopies.Remove(masked.NetworkObjectId);
@@ -399,13 +424,53 @@ internal sealed class HostServices : MonoBehaviour
         else
         {
             player = ChooseCopy(masked);
+            natural = true;
         }
         if (player == null)
         {
             Plugin.Log.LogInfo("No player to copy; leaving this Masked vanilla");
+            leftVanilla.RemoveWhere(m => m == null);
+            leftVanilla.Add(masked);
             yield break;
         }
         ModNetwork.Instance.SetupMimic(masked, player, revived, Cfg.MimicName.Value.Trim());
+        if (natural && Cfg.SpawnWithScrap.Value) StartCoroutine(GiveStartingScrap(masked));
+    }
+
+    // A piece of this moon's scrap (one-handed and not too heavy, picked by the moon's own rarity), spawned like the
+    // level's scrap and put straight into the new Masked's hand.
+    private IEnumerator GiveStartingScrap(MaskedPlayerEnemy masked)
+    {
+        var level = StartOfRound.Instance.currentLevel;
+        var round = RoundManager.Instance;
+        if (level == null || round == null || level.spawnableScrap == null) yield break;
+        var options = level.spawnableScrap.Where(s => s.rarity > 0 && s.spawnableItem != null && s.spawnableItem.spawnPrefab != null &&
+                                                      s.spawnableItem.isScrap && !s.spawnableItem.twoHanded && s.spawnableItem.weight <= 1.25f)
+            .ToList();
+        if (options.Count == 0) yield break;
+        int roll = UnityEngine.Random.Range(0, options.Sum(s => s.rarity));
+        var pick = options.First(s => (roll -= s.rarity) < 0).spawnableItem;
+
+        Transform parent = round.spawnedScrapContainer != null ? round.spawnedScrapContainer : StartOfRound.Instance.propsContainer;
+        var obj = Instantiate(pick.spawnPrefab, masked.transform.position + Vector3.up, Quaternion.identity, parent);
+        var item = obj.GetComponent<GrabbableObject>();
+        var net = obj.GetComponent<NetworkObject>();
+        if (item == null || net == null)
+        {
+            Destroy(obj);
+            yield break;
+        }
+        int value = Mathf.Max(1, (int)(UnityEngine.Random.Range(pick.minValue, pick.maxValue) * round.scrapValueMultiplier));
+        item.scrapValue = value;
+        item.isInFactory = !masked.isOutside;
+        net.Spawn();
+        yield return new WaitForSeconds(0.3f); // the item reaches everyone before the grab that names it
+        if (item == null || masked == null || masked.isEnemyDead) yield break;
+        round.SyncScrapValuesClientRpc(new[] { new NetworkObjectReference(net) }, new[] { value });
+        var brain = masked.GetComponent<MimicBrain>();
+        if (brain == null) yield break;
+        brain.GiveStartingItem(item);
+        Plugin.Log.LogInfo($"{brain.Copied.playerUsername}'s Masked starts out holding a {pick.itemName} (${value})");
     }
 
     // Who saw the player a revived Masked copies die (Revive > OnlyWhenUnobserved off). Asked once, by its brain.

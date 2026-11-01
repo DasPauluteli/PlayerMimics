@@ -112,9 +112,9 @@ internal sealed partial class MimicBrain
         bool walking = agent != null && agent.enabled && agent.velocity.sqrMagnitude > 0.5f;
         if (Current == Behaviour.Attack)
         {
-            isSprinting = walking; // the chase itself ignores stamina, like a Masked
+            isSprinting = walking && (lunging || wantSprint); // the lunge ignores stamina, like a Masked
         }
-        else if (!wantSprint || !walking)
+        else if (!(wantSprint || habitSprint) || !walking)
         {
             isSprinting = false;
         }
@@ -133,7 +133,7 @@ internal sealed partial class MimicBrain
 
         if (isSprinting)
         {
-            if (Current != Behaviour.Attack) stamina = Mathf.Max(0f, stamina - dt / SprintSeconds * CarryWeight); // loot drains it faster
+            if (!(Current == Behaviour.Attack && lunging)) stamina = Mathf.Max(0f, stamina - dt / SprintSeconds * CarryWeight); // loot drains it faster
             sprintMultiplier = Mathf.Lerp(sprintMultiplier, SprintMultiplierMax, dt);
         }
         else
@@ -143,8 +143,10 @@ internal sealed partial class MimicBrain
             if (exhausted && stamina >= 0.3f) exhausted = false;
             sprintMultiplier = Mathf.Lerp(sprintMultiplier, 1f, 10f * dt);
         }
-        crouching = wantCrouch && !isSprinting;
+        HabitBodyStep();
+        crouching = (wantCrouch || habitCrouch) && !isSprinting;
         HazardStep();
+        if (habit != null) SyncVisuals(); // crouch-spam and jumps don't wait for the AI tick
 
         // Position updates 10 times a second while it moves, so other screens see a walk instead of hops.
         if (walking && Time.time - lastPositionSync >= 0.1f)
@@ -160,9 +162,10 @@ internal sealed partial class MimicBrain
         var agent = Masked.agent;
         if (agent == null || Masked.isEnemyDead || Masked.stunNormalizedTimer >= 0f || Masked.inSpecialAnimation) return;
         // Like a player, what it carries divides its speed.
-        agent.speed = Current == Behaviour.Attack
+        agent.speed = Current == Behaviour.Attack && lunging
             ? AttackSpeed / CarryWeight
-            : Mathf.Min(Cfg.WalkSpeed.Value / (crouching ? 1.5f : 1f) * sprintMultiplier / CarryWeight, speedCap);
+            : Mathf.Min(Cfg.WalkSpeed.Value / (crouching ? 1.5f : 1f) * sprintMultiplier / CarryWeight,
+                isSprinting && habitSprint ? float.MaxValue : speedCap); // its player's sprint bursts run ahead
         agent.speed *= HazardSpeedFactor;
     }
 
@@ -311,7 +314,7 @@ internal sealed partial class MimicBrain
     {
         if (lookPlayer != null && (Time.time >= lookPlayerUntil || lookPlayer.isPlayerDead)) ClearLook();
         if (lookPoint.HasValue && Time.time >= lookPointUntil) lookPoint = null;
-        bool busy = Current is Behaviour.Attack or Behaviour.Flee;
+        bool busy = Current is Behaviour.Flee || (Current == Behaviour.Attack && lunging); // stalking still looks around
 
         if (glancePlayer != null && Time.time >= glancePlayerAt)
         {
@@ -326,9 +329,14 @@ internal sealed partial class MimicBrain
             if (!busy) LookAtPoint(point, Random.Range(0.8f, 1.6f));
         }
 
-        if (busy || Current is Behaviour.Stare or Behaviour.Emote) return;
+        if (busy || Current is Behaviour.Stare or Behaviour.Emote)
+        {
+            StopHabit();
+            return;
+        }
+        if (HabitGaze()) return;
         if (LookTarget().HasValue || Time.time < nextIdleLook) return;
-        IdleLook();
+        if (!StartHabit()) IdleLook();
     }
 
     // What players do with their camera when nothing's going on: look at people, around the room, at loot, at
@@ -480,7 +488,10 @@ internal sealed partial class MimicBrain
     private void RollFollowSlot()
     {
         slotAngle = Random.Range(25f, 65f);
-        slotDistance = Random.Range(2.2f, 4f);
+        // Its player's own spacing when they walk with others, if the round has shown it; else a usual one.
+        slotDistance = HabitRecorder.Spacing(Copied, out float spacing)
+            ? Mathf.Clamp(spacing * Random.Range(0.85f, 1.15f), 1.8f, 6f)
+            : Random.Range(2.2f, 4f);
         nextSlotRoll = Time.time + Random.Range(12f, 30f);
     }
 
@@ -730,18 +741,6 @@ internal sealed partial class MimicBrain
         {
             SetBehaviour(Behaviour.Attack, Target, 0f);
         }
-    }
-
-    private void Attack()
-    {
-        if (Target == null || !CanAttack(out _))
-        {
-            SetBehaviour(Behaviour.BlendIn, null, 0f);
-            return;
-        }
-        wantSprint = true;
-        if (lookPlayer != Target) LookAtPlayer(Target, 30f);
-        GoTo(Target.transform.position, Target.isInsideFactory);
     }
 
     private void FleeFrom(PlayerControllerB by, float seconds)

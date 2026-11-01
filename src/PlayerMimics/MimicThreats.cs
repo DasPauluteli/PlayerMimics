@@ -72,7 +72,11 @@ internal sealed partial class MimicBrain
             "RedLocustBees" => state >= 1 ? new("bees", Reaction.Flee, 15f) : new("bees", Reaction.BackAway, 6f),
             "ButlerBeesEnemyAI" => new("hornets", Reaction.Flee, 15f),
             "JesterAI" => state >= 1 ? new("jester", Reaction.Flee, 40f) : new("jester box", Reaction.BackAway, 6f),
-            "MaskedPlayerEnemy" => new("Masked", Reaction.Flee, 15f), // a vanilla one, wearing its mask
+            // A vanilla one, wearing its mask. One of ours (or one still being set up, mask showing for a moment) is kin.
+            "MaskedPlayerEnemy" => MimicDisguise.Of(e) != null || HostServices.Instance == null ||
+                                   HostServices.Instance.SettingUp((MaskedPlayerEnemy)e)
+                ? new("Masked", Reaction.Ignore)
+                : new("Masked", Reaction.Flee, 15f),
             _ => new(e.enemyType != null ? e.enemyType.enemyName : "monster", Reaction.Flee, 8f),
         };
     }
@@ -96,6 +100,8 @@ internal sealed partial class MimicBrain
     private EnemyAI? NearestMonster() =>
         Monsters(30f).Where(e => Judge(e).Reaction != Reaction.Ignore)
             .OrderBy(e => Vector3.Distance(e.transform.position, transform.position)).FirstOrDefault();
+
+    private readonly Dictionary<EnemyAI, float> reactAt = new();
 
     private void PerceiveThreats()
     {
@@ -124,7 +130,16 @@ internal sealed partial class MimicBrain
                 worstDistance = d;
             }
         }
-        if (worst == null || Current == Behaviour.Attack) return; // in the middle of a kill it keeps going
+        if (worst == null || (Current == Behaviour.Attack && lunging)) return; // in the middle of a kill it keeps going
+        // A player needs a moment to react to something new (less when it's right on them).
+        if (!(Fleeing && fleeMonster == worst))
+        {
+            if (!reactAt.TryGetValue(worst, out float at) || Time.time - at > 8f)
+            {
+                reactAt[worst] = at = Time.time + UnityEngine.Random.Range(0.2f, 0.55f) * (worstDistance < 4f ? 0.6f : 1f);
+            }
+            if (Time.time < at) return;
+        }
         switch (worstDanger.Reaction)
         {
             case Reaction.Flee: StartFlee(worst, worstDanger, FleeStyle.Run, UnityEngine.Random.Range(4f, 7f), worstDistance); break;

@@ -658,7 +658,8 @@ class Brain:
                         self.llm_stats = f"read {pe} tok in {ped:.2f}s, wrote {ev} tok in {evd:.2f}s"
                         break
                     if stop():
-                        return None  # leaving the with-block closes the connection
+                        self.llm_stats = f"stopped early after {len(text)} chars"
+                        break  # leaving the with-block closes the connection
         except urllib.error.HTTPError as e:
             if "think" in body and e.code == 400:
                 self.llm_think_ok = False
@@ -893,8 +894,12 @@ class Brain:
         "check spots; stare = stop and look at someone; wander = go check a spot near the crew (scrap, an entrance, the "
         "ship); lure = lead someone away from the others; flee = run; emote = do an emote; attack = kill.",
         "- Stay with the group; wandering off alone looks suspicious.",
-        "- Attack only when can_attack is true and the moment is right: someone alone with you, your cover is blown, or "
-        "you were attacked. Otherwise keep blending in.",
+        "- Attack only when can_attack is true. You're a predator playing their friend: when someone is alone_with_you "
+        "and can_attack is true, going for them is usually right, even if they don't suspect a thing, best when they're "
+        "turned away or busy looting. In front of others keep blending in, unless your cover is blown, someone figured "
+        "out what you are, or you were attacked. An attack starts as you walking over casually; say nothing that warns them.",
+        "- Once someone knows what you are (cover blown, they call you a mimic and run or keep away), pretending is "
+        "pointless: attack them before they get away or warn the others.",
         "- If someone hits you or holds up a sign at you while you're disguised, flee or attack them.",
         "- Emote only when it fits (someone dances, a point, a joke). \"sign\" holds up a sign with sign_text.",
         "",
@@ -961,6 +966,17 @@ class Brain:
                 except Exception:  # noqa: BLE001
                     return ""
         return None
+
+    @staticmethod
+    def _answer_fields(text: str) -> dict:
+        """The string fields of a JSON answer that are complete so far (also works on one that got cut off)."""
+        out = {}
+        for k, v in re.findall(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text):
+            try:
+                out[k] = json.loads(f'"{v}"')
+            except Exception:  # noqa: BLE001
+                out[k] = v
+        return out
 
     @staticmethod
     def _prune(x, top: bool = True):
@@ -1048,23 +1064,30 @@ class Brain:
         names = {pl.get("name", "").lower(): pl.get("name", "") for pl in players}
         props: dict = {}
         if can_talk:
-            props["say"] = {"type": "string"}
+            props["say"] = {"type": "string", "maxLength": 200}
         props["action"] = {"type": "string", "enum": allowed}
         props["target"] = {"type": "string", "enum": [""] + [n for n in names.values() if n]}
         if any(a in allowed for a in ("pick_up", "drop", "hold")):
-            props["item"] = {"type": "string"}
+            props["item"] = {"type": "string", "maxLength": 40}
         if emotes:
             props["emote"] = {"type": "string", "enum": [""] + emotes}
         if "sign" in emotes:
-            props["sign_text"] = {"type": "string"}
+            props["sign_text"] = {"type": "string", "maxLength": 24}
         if req.get("log_prompt"):
-            props["why"] = {"type": "string"}
+            props["why"] = {"type": "string", "maxLength": 60}
         schema = {"type": "object", "properties": props, "required": list(props)}
 
         voice = req.get("voice") if isinstance(req.get("voice"), dict) else None
-        early = {"say": None, "stream": ""}
+        early = {"say": None, "stream": "", "done": False}
+
+        # Stop reading as soon as every field is there, or when the model only writes whitespace (it sometimes runs
+        # on with line breaks until max_tokens, which cost seconds and used to lose the whole answer).
+        def finished() -> bool:
+            return stale() or early["done"]
 
         def on_text(text: str) -> None:
+            if not early["done"] and (all(k in self._answer_fields(text) for k in props) or re.search(r"\s{24,}$", text)):
+                early["done"] = True
             if early["say"] is not None or not can_talk:
                 return
             said = self._finished_say(text)
@@ -1077,7 +1100,7 @@ class Brain:
 
         t0 = time.time()
         raw = self.llm_stream([{"role": "system", "content": self.DECIDE_SYSTEM}, {"role": "user", "content": user}],
-                              int(req.get("max_tokens", 120)), float(req.get("temperature", 0.8)), schema, on_text, stale)
+                              int(req.get("max_tokens", 120)), float(req.get("temperature", 0.8)), schema, on_text, finished)
         dt = time.time() - t0
         if raw is None or stale():
             if early["stream"]:
@@ -1087,7 +1110,9 @@ class Brain:
         try:
             out = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
         except Exception:  # noqa: BLE001
-            out = {}
+            out = self._answer_fields(raw)  # cut off: keep what was written (the action comes right after "say")
+            if not all(k in out for k in props):
+                log.warning("[%s] answer was cut off; kept %s from ...%r", you, sorted(out), raw[-120:])
         action = str(out.get("action", "")).strip().lower()
         if action not in allowed:
             action = "blend_in" if "blend_in" in allowed else allowed[0]

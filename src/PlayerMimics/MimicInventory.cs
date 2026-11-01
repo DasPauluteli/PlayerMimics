@@ -152,6 +152,7 @@ internal sealed class MimicInventory : MonoBehaviour
         {
             item.transform.SetParent(item.isInElevator ? round.elevatorTransform : round.propsContainer, true);
         }
+        PullApparatus(item);
         item.GrabItemFromEnemy(disguise.Masked);
         item.isHeldByEnemy = true;
         item.EnablePhysics(false);
@@ -165,6 +166,25 @@ internal sealed class MimicInventory : MonoBehaviour
         if (sfx != null && grabSounds != null && grabSounds.Length > 0) sfx.PlayOneShot(grabSounds[Random.Range(0, grabSounds.Length)]);
         if (sfx != null && item.itemProperties.grabSFX != null) sfx.PlayOneShot(item.itemProperties.grabSFX, 1f);
         disguise.OnGrab(item);
+    }
+
+    // What the apparatus does when a player grabs it (LungProp.EquipItem), which an enemy grab skips: out of the
+    // machine with sparks, the lights flicker and the power goes off.
+    private static void PullApparatus(GrabbableObject item)
+    {
+        if (item is not LungProp lung) return;
+        if (lung.isLungDocked)
+        {
+            lung.isLungDocked = false;
+            if (lung.disconnectAnimation != null) lung.StopCoroutine(lung.disconnectAnimation);
+            lung.disconnectAnimation = lung.StartCoroutine(lung.DisconnectFromMachinery());
+        }
+        if (lung.isLungDockedInElevator)
+        {
+            lung.isLungDockedInElevator = false;
+            var audio = lung.GetComponent<AudioSource>();
+            if (audio != null && lung.disconnectSFX != null) audio.PlayOneShot(lung.disconnectSFX);
+        }
     }
 
     internal void Switch(int slot)

@@ -12,8 +12,8 @@ namespace PlayerMimics;
 internal sealed class ConsentPopup : MonoBehaviour
 {
     internal static readonly Color Orange = new(1f, 0.42f, 0.11f);
-    private static readonly Color Dim = new(0.98f, 0.62f, 0.38f);
-    private static readonly Color Panel = new(0.035f, 0.025f, 0.02f, 0.97f);
+    private static readonly Color dimColor = new(0.98f, 0.62f, 0.38f);
+    private static readonly Color panelColor = new(0.035f, 0.025f, 0.02f, 0.97f);
 
     private bool showing;
     private bool lookWasDisabled;
@@ -142,7 +142,7 @@ internal sealed class ConsentPopup : MonoBehaviour
         // Orange frame with the dark panel inset into it.
         var frame = Box(root.transform, "Frame", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-470f, -330f),
             new Vector2(470f, 330f), Orange);
-        var panel = Box(frame, "Panel", Vector2.zero, Vector2.one, new Vector2(3f, 3f), new Vector2(-3f, -3f), Panel);
+        var panel = Box(frame, "Panel", Vector2.zero, Vector2.one, new Vector2(3f, 3f), new Vector2(-3f, -3f), panelColor);
 
         var title = Text(panel, "Title", font, 40f, Orange, TextAlignmentOptions.TopLeft);
         Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(36f, -88f), new Vector2(-36f, -26f));
@@ -152,7 +152,7 @@ internal sealed class ConsentPopup : MonoBehaviour
         var rule = Box(panel, "Rule", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(36f, -94f), new Vector2(-36f, -91f), Orange);
         rule.GetComponent<Image>().raycastTarget = false;
 
-        body = Text(panel, "Body", font, 23f, Dim, TextAlignmentOptions.TopLeft);
+        body = Text(panel, "Body", font, 23f, dimColor, TextAlignmentOptions.TopLeft);
         Place(body.rectTransform, Vector2.zero, Vector2.one, new Vector2(36f, 110f), new Vector2(-36f, -112f));
         body.enableAutoSizing = true;
         body.fontSizeMin = 14f;
