@@ -1,0 +1,10 @@
+# Made by setup and while running: environments, downloaded models, logs and saved voices.
+.venv/
+venv*/
+models/
+onnx/
+voices/
+__pycache__/
+*.log
+*.bak*
+llm_api_key.txt

@@ -1,0 +1,12 @@
+# PlayerMimics AI server. PyTorch is installed first by setup.ps1 / setup.sh (CUDA, ROCm or CPU build).
+transformers==4.57.6
+huggingface_hub==0.36.2
+hf_xet
+safetensors
+numpy
+scipy
+soundfile
+librosa
+faster-whisper==1.2.1
+# Only for --tts onnx (the small 0.1B voice model).
+onnxruntime
