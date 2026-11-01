@@ -28,12 +28,12 @@ internal static class CoronerCompat
     }
 
     // Every client: prepare "killed by a Masked disguised as <name>" for the end-of-round report.
-    internal static void OnDisguised(PlayerControllerB copied)
+    internal static void OnDisguised(string name)
     {
         if (!Installed) return;
         try
         {
-            CoronerBridge.RegisterFor(copied.playerUsername);
+            CoronerBridge.RegisterFor(name);
         }
         catch (Exception e)
         {
@@ -47,7 +47,7 @@ internal static class CoronerCompat
         if (!Installed) return;
         try
         {
-            CoronerBridge.ReportKill(disguise.Player.playerUsername, victim);
+            CoronerBridge.ReportKill(disguise.Name, victim);
         }
         catch (Exception e)
         {

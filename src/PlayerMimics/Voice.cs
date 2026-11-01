@@ -197,42 +197,129 @@ internal sealed class VoiceCapture : MonoBehaviour, IMicrophoneSubscriber
 // Plays a Masked's cloned lines from its head, routed and filtered like the copied player's voice chat.
 internal sealed class MimicVoice : MonoBehaviour
 {
+    private const int MaxLineSeconds = 60;
+
     private AudioSource? source;
-    private readonly Dictionary<int, ChunkAssembly> lines = new();
     private AudioClip? clip;
 
-    internal bool Speaking => source != null && source.isPlaying;
+    // The line being received. Pieces are appended on the main thread and read by Unity's audio thread
+    // (OnAudioRead), so the queue and counters are shared under 'gate'.
+    private readonly object gate = new();
+    private readonly Queue<float[]> queue = new();
+    private int headPos;          // read position in queue.Peek()
+    private int written;          // samples handed to Unity so far, gap silence included
+    private int realEnd;          // 'written' at the end of the last real sample
+    private bool lineFinal;
+    private int currentLine = -1;
+    private int lastSeq = -1;
+    private int lineRate = AudioCodec.NetRate;
+    private bool playing;
 
-    internal void ReceiveChunk(int line, int index, int count, int rate, byte[] data)
-    {
-        if (count <= 0 || count > 400) return;
-        if (!lines.TryGetValue(line, out var parts))
-        {
-            parts = new ChunkAssembly(count, Time.realtimeSinceStartup);
-            lines[line] = parts;
-        }
-        if (parts.Count != count || !parts.Add(index, data)) return;
-        lines.Remove(line);
-        Play(AudioCodec.MuLawDecode(parts.Join()), rate);
-    }
+    internal bool Speaking => playing || (source != null && source.isPlaying);
 
-    private void Play(float[] samples, int rate)
+    internal void ReceiveStream(int line, int seq, int rate, byte[] data, bool start, bool final)
     {
         var masked = GetComponent<MaskedPlayerEnemy>();
-        if (masked == null || masked.isEnemyDead || samples.Length == 0) return;
-        Fade(samples, rate / 100);
+        if (masked == null || masked.isEnemyDead) return;
+        if (line != currentLine)
+        {
+            if (line < currentLine) return; // a piece of an older line
+            StopLine();                     // a new line cuts off the old one
+            currentLine = line;
+            lastSeq = -1;
+            lineRate = rate;
+        }
+        if (seq <= lastSeq) return;
+        lastSeq = seq;
+        lock (gate)
+        {
+            if (data.Length > 0) queue.Enqueue(AudioCodec.MuLawDecode(data));
+            if (final) lineFinal = true;
+        }
+        if (start && !playing)
+        {
+            StartPlaying(masked);
+        }
+        else if (final && !playing)
+        {
+            StopLine(); // ended without ever starting (the host gave up on it)
+        }
+    }
+
+    private void StartPlaying(MaskedPlayerEnemy masked)
+    {
         Ensure(masked);
         source!.Stop();
         if (clip != null) Destroy(clip);
-        clip = AudioClip.Create("PlayerMimicsLine", samples.Length, 1, rate, false);
-        clip.SetData(samples, 0);
+        lock (gate)
+        {
+            written = 0;
+            realEnd = 0;
+        }
+        // A streamed clip pulls its samples from OnAudioRead as it plays, so it can start before the line is complete.
+        clip = AudioClip.Create("PlayerMimicsLine", lineRate * MaxLineSeconds, 1, lineRate, true, OnAudioRead);
         Route(MimicDisguise.Of(masked)?.Player);
         source.clip = clip;
+        source.loop = false;
         source.volume = Cfg.MimicVoiceVolume.Value;
         source.Play();
+        playing = true;
     }
 
-    private static void Fade(float[] s, int n)
+    // Unity's audio thread. Runs out of audio mid-line -> silence until more arrives.
+    private void OnAudioRead(float[] data)
+    {
+        lock (gate)
+        {
+            int i = 0;
+            while (i < data.Length && queue.Count > 0)
+            {
+                var head = queue.Peek();
+                int n = Math.Min(data.Length - i, head.Length - headPos);
+                Array.Copy(head, headPos, data, i, n);
+                i += n;
+                headPos += n;
+                if (headPos >= head.Length)
+                {
+                    queue.Dequeue();
+                    headPos = 0;
+                }
+                realEnd = written + i;
+            }
+            if (i < data.Length) Array.Clear(data, i, data.Length - i);
+            written += data.Length;
+        }
+    }
+
+    private void Update()
+    {
+        if (!playing || source == null) return;
+        bool finished;
+        lock (gate)
+        {
+            finished = lineFinal && queue.Count == 0 && source.timeSamples >= realEnd;
+        }
+        if (finished || !source.isPlaying) StopLine();
+    }
+
+    private void StopLine()
+    {
+        playing = false;
+        if (source != null) source.Stop();
+        if (clip != null)
+        {
+            Destroy(clip);
+            clip = null;
+        }
+        lock (gate)
+        {
+            queue.Clear();
+            headPos = 0;
+            lineFinal = false;
+        }
+    }
+
+    internal static void Fade(float[] s, int n)
     {
         n = Math.Min(n, s.Length / 2);
         for (int i = 0; i < n; i++)

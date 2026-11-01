@@ -29,5 +29,12 @@
     <ThunderstoreSoftDependency Include="EliteMasterEric-Coroner" Version="2.4.2" />
     <Reference Include="$(MortarDependency_EliteMasterEric_Coroner)*.dll" Condition="'$(MortarDependency_EliteMasterEric_Coroner)' != ''" Private="false" />
     <Reference Include="$(MortarDependency_AinaVT_LethalConfig)**/*.dll" Condition="'$(MortarDependency_AinaVT_LethalConfig)' != ''" Private="false" />
+    <ThunderstoreSoftDependency Include="x753-More_Suits" Version="1.5.4" />
+    <Reference Include="$(MortarDependency_x753_More_Suits)**/*.dll" Condition="'$(MortarDependency_x753_More_Suits)' != ''" Private="false" />
+    <Reference Include="$(MortarDependency_EliteMasterEric_Coroner)**/*.dll" Condition="'$(MortarDependency_EliteMasterEric_Coroner)' != ''" Private="false" />
+    <ThunderstoreSoftDependency Include="KlutzyBubbles-BetterEmotes" Version="1.5.8" />
+    <Reference Include="$(MortarDependency_KlutzyBubbles_BetterEmotes)**/*.dll" Condition="'$(MortarDependency_KlutzyBubbles_BetterEmotes)' != ''" Private="false" />
+    <ThunderstoreSoftDependency Include="notnotnotswipez-MoreCompany" Version="1.14.0" />
+    <Reference Include="$(MortarDependency_notnotnotswipez_MoreCompany)**/*.dll" Condition="'$(MortarDependency_notnotnotswipez_MoreCompany)' != ''" Private="false" />
   </ItemGroup>
 </Project>

@@ -26,14 +26,16 @@ internal sealed class DebugTools : MonoBehaviour
             StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.isPlayerControlled &&
                 string.Equals(p.playerUsername, name, StringComparison.OrdinalIgnoreCase)) ?? me;
         Vector3 at = me.transform.position + me.transform.forward * 4f;
-        HostServices.Instance.SpawnMasked(at, me.transform.eulerAngles.y + 180f, copy, revived: false);
-        Plugin.Log.LogInfo($"Spawned a Masked copying {copy.playerUsername}");
+        if (HostServices.Instance.SpawnMasked(at, me.transform.eulerAngles.y + 180f, copy, revived: false) != null)
+        {
+            Plugin.Log.LogInfo($"Spawned a Masked copying {copy.playerUsername}");
+        }
     }
 
     private void OnGUI()
     {
         bool overlay = Cfg.ShowBrainOverlay.Value && HostServices.IsHost;
-        bool reveal = Cfg.RevealMasked.Value;
+        bool reveal = Cfg.RevealMasked.Value && HostServices.IsHost; // debug views are for the host only
         if (!overlay && !reveal) return;
         var cam = StartOfRound.Instance != null ? StartOfRound.Instance.activeCamera : null;
         if (cam == null) return;
@@ -51,7 +53,7 @@ internal sealed class DebugTools : MonoBehaviour
             if (reveal)
             {
                 GUI.color = Color.red;
-                GUI.Label(new Rect(pos.x - 60, pos.y - 20, 120, 20), $"<b>MASKED ({d.Player.playerUsername})</b>", style);
+                GUI.Label(new Rect(pos.x - 60, pos.y - 20, 120, 20), $"<b>MASKED ({d.Name})</b>", style);
             }
             if (overlay && d.DebugText.Length > 0)
             {

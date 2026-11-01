@@ -5,15 +5,18 @@ using UnityEngine;
 
 namespace PlayerMimics;
 
-// BetterEmotes is optional. Everything is read by reflection so the mod loads without it.
+// BetterEmotes (KlutzyBubbles', or Grombler's BestEmotes fork) is optional. Everything is read by reflection so the mod loads without it.
 internal static class BetterEmotesCompat
 {
     private static bool looked;
-    private static FieldInfo? othersField;
+    private static FieldInfo? localField;
     private static FieldInfo? signPrefabField;
     private static FieldInfo? clapsField;
 
-    internal static bool Installed => BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("BetterEmotes");
+    // Older builds register as "BetterEmotes", current ones as "BestEmotes".
+    internal static bool Installed =>
+        BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("BestEmotes") ||
+        BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("BetterEmotes");
 
     private static void Look()
     {
@@ -22,7 +25,7 @@ internal static class BetterEmotesCompat
         if (!Installed) return;
         try
         {
-            othersField = AccessTools.Field(AccessTools.TypeByName("BetterEmote.Patches.EmotePatch"), "others");
+            localField = AccessTools.Field(AccessTools.TypeByName("BetterEmote.Patches.EmotePatch"), "local");
             var localPlayer = AccessTools.TypeByName("BetterEmote.AssetScripts.LocalPlayer");
             signPrefabField = AccessTools.Field(localPlayer, "SignPrefab");
             clapsField = AccessTools.Field(AccessTools.TypeByName("BetterEmote.AssetScripts.CustomAudioAnimationEvent"), "claps");
@@ -33,13 +36,15 @@ internal static class BetterEmotesCompat
         }
     }
 
-    // The animator controller BetterEmotes gives other players: the player animations plus all its emotes.
-    internal static RuntimeAnimatorController? OthersController
+    // The animator controller BetterEmotes gives your own player: the player animations plus all its emotes, driven
+    // by the parameters (Walking, Sprinting, emoteNumber...) a Masked can set. The one it gives other players only
+    // follows the animation states their owner sends, so a Masked using it never walks.
+    internal static RuntimeAnimatorController? LocalController
     {
         get
         {
             Look();
-            return othersField?.GetValue(null) as RuntimeAnimatorController;
+            return localField?.GetValue(null) as RuntimeAnimatorController;
         }
     }
 

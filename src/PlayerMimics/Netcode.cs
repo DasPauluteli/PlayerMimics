@@ -16,6 +16,7 @@ internal sealed class ModNetwork : NetworkBehaviour
     internal static bool HostStatusKnown;
     internal static bool HostAiOnline;
     internal static bool HostSavesAudio;
+    internal static float HostNameTagRange = 5f; // host's setting, so nobody can see Masked name tags from further away
 
     public override void OnNetworkSpawn()
     {
@@ -51,15 +52,16 @@ internal sealed class ModNetwork : NetworkBehaviour
     internal void BroadcastHostStatus()
     {
         if (!IsServer || HostServices.Instance == null) return;
-        HostStatusClientRpc(HostServices.Instance.AiOnline, Cfg.SaveAudioToDisk.Value);
+        HostStatusClientRpc(HostServices.Instance.AiOnline, Cfg.SaveAudioToDisk.Value, Cfg.NameTagRange.Value);
     }
 
     [ClientRpc]
-    private void HostStatusClientRpc(bool aiOnline, bool savesAudio)
+    private void HostStatusClientRpc(bool aiOnline, bool savesAudio, float nameTagRange)
     {
         HostStatusKnown = true;
         HostAiOnline = aiOnline;
         HostSavesAudio = savesAudio;
+        HostNameTagRange = Mathf.Clamp(nameTagRange, 0f, 20f);
     }
 
     // ---- voice upload (client -> host). Mu-law, 16 kHz, cut into chunks.
@@ -72,20 +74,21 @@ internal sealed class ModNetwork : NetworkBehaviour
 
     // ---- mimic setup and state (host -> everyone)
 
-    internal void SetupMimic(MaskedPlayerEnemy masked, PlayerControllerB player, bool revived)
+    // name: what it goes by, empty for the copied player's name (Debug > MimicName, so everyone needs it).
+    internal void SetupMimic(MaskedPlayerEnemy masked, PlayerControllerB player, bool revived, string name)
     {
-        SetupMimicClientRpc(new NetworkObjectReference(masked.NetworkObject), (int)player.playerClientId, revived);
+        SetupMimicClientRpc(new NetworkObjectReference(masked.NetworkObject), (int)player.playerClientId, revived, name);
     }
 
     [ClientRpc]
-    private void SetupMimicClientRpc(NetworkObjectReference masked, int playerId, bool revived)
+    private void SetupMimicClientRpc(NetworkObjectReference masked, int playerId, bool revived, string name)
     {
         if (!masked.TryGet(out NetworkObject obj)) return;
         var enemy = obj.GetComponent<MaskedPlayerEnemy>();
         if (enemy == null || playerId < 0 || playerId >= StartOfRound.Instance.allPlayerScripts.Length) return;
         var player = StartOfRound.Instance.allPlayerScripts[playerId];
         var disguise = enemy.GetComponent<MimicDisguise>() ?? enemy.gameObject.AddComponent<MimicDisguise>();
-        disguise.Apply(player, revived);
+        disguise.Apply(player, revived, name);
         if (IsServer && enemy.GetComponent<MimicBrain>() == null)
         {
             enemy.gameObject.AddComponent<MimicBrain>().Init(enemy, disguise);
@@ -126,13 +129,71 @@ internal sealed class ModNetwork : NetworkBehaviour
 
     // ---- mimic voice lines (host -> everyone)
 
+    // A line arrives in pieces (mu-law, in order). 'start' says when to begin playing: on the first pieces when the
+    // server makes audio faster than real time, otherwise only with the last piece. 'final' ends the line.
     [ClientRpc]
-    internal void VoiceLineClientRpc(NetworkObjectReference masked, int line, int index, int count, int sampleRate, byte[] data)
+    internal void VoiceStreamClientRpc(NetworkObjectReference masked, int line, int seq, int sampleRate, byte[] data,
+        bool start, bool final)
     {
         if (!masked.TryGet(out NetworkObject obj)) return;
         var voice = obj.GetComponent<MimicVoice>() ?? obj.gameObject.AddComponent<MimicVoice>();
-        voice.ReceiveChunk(line, index, count, sampleRate, data);
+        voice.ReceiveStream(line, seq, sampleRate, data, start, final);
     }
+
+    // ---- mimic items and doors (host -> everyone). The host checks everything first; clients just do the step.
+
+    internal void MimicGrab(MaskedPlayerEnemy masked, GrabbableObject item, int slot) =>
+        MimicGrabClientRpc(new NetworkObjectReference(masked.NetworkObject), new NetworkObjectReference(item.NetworkObject), slot);
+
+    [ClientRpc]
+    private void MimicGrabClientRpc(NetworkObjectReference masked, NetworkObjectReference item, int slot)
+    {
+        var inventory = InventoryOf(masked);
+        if (inventory == null || !item.TryGet(out NetworkObject obj)) return;
+        var grabbable = obj.GetComponent<GrabbableObject>();
+        if (grabbable != null) inventory.Grab(grabbable, slot);
+    }
+
+    internal void MimicSwitch(MaskedPlayerEnemy masked, int slot) =>
+        MimicSwitchClientRpc(new NetworkObjectReference(masked.NetworkObject), slot);
+
+    [ClientRpc]
+    private void MimicSwitchClientRpc(NetworkObjectReference masked, int slot) => InventoryOf(masked)?.Switch(slot);
+
+    internal void MimicDrop(MaskedPlayerEnemy masked, GrabbableObject item, Vector3 target, bool inElevator, bool inShipRoom, int floorYRot) =>
+        MimicDropClientRpc(new NetworkObjectReference(masked.NetworkObject), new NetworkObjectReference(item.NetworkObject), target,
+            inElevator, inShipRoom, floorYRot);
+
+    [ClientRpc]
+    private void MimicDropClientRpc(NetworkObjectReference masked, NetworkObjectReference item, Vector3 target, bool inElevator,
+        bool inShipRoom, int floorYRot)
+    {
+        var inventory = InventoryOf(masked);
+        if (inventory == null || !item.TryGet(out NetworkObject obj)) return;
+        var grabbable = obj.GetComponent<GrabbableObject>();
+        if (grabbable != null) inventory.Drop(grabbable, target, inElevator, inShipRoom, floorYRot);
+    }
+
+    // The door is named by its id and side; every client has the same entrances.
+    internal void MimicEntrance(MaskedPlayerEnemy masked, EntranceTeleport door, Vector3 pos, float yaw) =>
+        MimicEntranceClientRpc(new NetworkObjectReference(masked.NetworkObject), door.entranceId, door.isEntranceToBuilding, pos, yaw);
+
+    [ClientRpc]
+    private void MimicEntranceClientRpc(NetworkObjectReference masked, int entranceId, bool fromOutside, Vector3 pos, float yaw)
+    {
+        if (!masked.TryGet(out NetworkObject obj)) return;
+        var disguise = obj.GetComponent<MimicDisguise>();
+        if (disguise == null) return;
+        EntranceTeleport? door = null;
+        foreach (var e in UnityEngine.Object.FindObjectsOfType<EntranceTeleport>())
+        {
+            if (e.entranceId == entranceId && e.isEntranceToBuilding == fromOutside) door = e;
+        }
+        disguise.UsedEntrance(door, pos, yaw, outside: !fromOutside);
+    }
+
+    private static MimicInventory? InventoryOf(NetworkObjectReference masked) =>
+        masked.TryGet(out NetworkObject obj) ? obj.GetComponent<MimicInventory>() : null;
 
     // ---- debug
 

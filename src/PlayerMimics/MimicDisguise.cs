@@ -2,10 +2,12 @@ using System.Collections.Generic;
 using GameNetcodeStuff;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Animations.Rigging;
 
 namespace PlayerMimics;
 
-// Runs on every client. Makes a Masked look, animate and sound like the player it copies.
+// Runs on every client. Makes a Masked look, animate and sound like the player it copies. It never shows its mask,
+// not even while it attacks.
 internal sealed class MimicDisguise : MonoBehaviour
 {
     internal static readonly List<MimicDisguise> All = new();
@@ -13,13 +15,17 @@ internal sealed class MimicDisguise : MonoBehaviour
     internal MaskedPlayerEnemy Masked = null!;
     internal PlayerControllerB Player = null!;
     internal bool Revived;
-    internal bool Revealed;
+    internal string Name = ""; // what it goes by: the copied player's name unless Debug > MimicName is set
+    internal bool Renamed;
     internal MimicVisualState State;
     internal string DebugText = "";
+    internal MimicInventory? Inventory;
 
     private Animator animator = null!;
     private RuntimeAnimatorController? maskedController;
+    private RuntimeAnimatorController? playerController;
     private bool usingPlayerAnimations;
+    private bool inKillPose;
     private readonly List<GameObject> hiddenMasks = new();
 
     private Transform? nameTagRoot;
@@ -33,17 +39,26 @@ internal sealed class MimicDisguise : MonoBehaviour
     private Vector3 smoothedVelocity;
     private float emoteWeight;
     private float lastFootstep;
+    private bool wasCrouching;
+    private float pitch;
+    private float noiseSeed;
+    private readonly HashSet<string> animParams = new();
+    private float holdWeight;
+    private float grabValidateAt = -1f;
 
     internal bool Moving => smoothedVelocity.magnitude > 0.35f;
 
     internal static MimicDisguise? Of(EnemyAI? enemy) =>
         enemy == null ? null : enemy.GetComponent<MimicDisguise>();
 
-    internal void Apply(PlayerControllerB player, bool revived)
+    internal void Apply(PlayerControllerB player, bool revived, string name)
     {
         Masked = GetComponent<MaskedPlayerEnemy>();
         Player = player;
         Revived = revived;
+        Name = string.IsNullOrWhiteSpace(name) ? player.playerUsername : name.Trim();
+        Renamed = Name != player.playerUsername;
+        noiseSeed = Random.Range(0f, 100f);
         if (!All.Contains(this)) All.Add(this);
         animator = Masked.creatureAnimator;
 
@@ -64,15 +79,23 @@ internal sealed class MimicDisguise : MonoBehaviour
         UsePlayerAnimations();
         MakeNameTag(player);
         MakeSign();
-        CoronerCompat.OnDisguised(player);
+        Inventory = GetComponent<MimicInventory>() ?? gameObject.AddComponent<MimicInventory>();
+        Inventory.Init(this);
+        CoronerCompat.OnDisguised(Name);
 
+        // Position updates more often and smoother, so on other screens it moves like a player rather than in hops.
+        Masked.syncMovementSpeed = 0.12f;
+        Masked.updatePositionThreshold = 0.3f;
         if (Masked.IsOwner && Masked.agent != null)
         {
-            Masked.agent.acceleration = 40f;
-            Masked.agent.angularSpeed = 900f;
+            Masked.agent.acceleration = 24f;
+            Masked.agent.autoBraking = true;
+            Masked.agent.stoppingDistance = 0.2f;
+            Masked.agent.updateRotation = false; // the brain turns it like a player turns the camera
         }
         lastPosition = transform.position;
-        Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex} now copies {player.playerUsername}{(revived ? " (revived)" : "")}");
+        Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex} now copies {player.playerUsername}{(Renamed ? $" as {Name}" : "")}" +
+                           (revived ? " (revived)" : ""));
     }
 
     private void OnDestroy()
@@ -87,24 +110,20 @@ internal sealed class MimicDisguise : MonoBehaviour
     {
         foreach (var t in Masked.GetComponentsInChildren<Transform>(true))
         {
-            if (t.name.StartsWith("HeadMask") && t.gameObject.activeSelf)
-            {
-                hiddenMasks.Add(t.gameObject);
-                t.gameObject.SetActive(false);
-            }
+            if (t.name.StartsWith("HeadMask")) hiddenMasks.Add(t.gameObject);
         }
-        if (Masked.maskTypes != null)
+        if (Masked.maskTypes != null) hiddenMasks.AddRange(Masked.maskTypes);
+        KeepMaskHidden();
+    }
+
+    // Vanilla turns masks and the eye glow on in a few places (mask type, kill animation); undo it every frame.
+    private void KeepMaskHidden()
+    {
+        foreach (var mask in hiddenMasks)
         {
-            foreach (var mask in Masked.maskTypes)
-            {
-                if (mask != null && mask.activeSelf)
-                {
-                    hiddenMasks.Add(mask);
-                    mask.SetActive(false);
-                }
-            }
+            if (mask != null && mask.activeSelf) mask.SetActive(false);
         }
-        if (Masked.maskEyesGlowLight != null) Masked.maskEyesGlowLight.enabled = false;
+        if (Masked.maskEyesGlowLight != null && Masked.maskEyesGlowLight.enabled) Masked.maskEyesGlowLight.enabled = false;
     }
 
     private void StopRadarSpin()
@@ -145,16 +164,37 @@ internal sealed class MimicDisguise : MonoBehaviour
             Plugin.Log.LogWarning($"Masked rig doesn't match the player rig ({animator.transform.name}); keeping Masked animations");
             return;
         }
-        RuntimeAnimatorController? controller = BetterEmotesCompat.OthersController ?? StartOfRound.Instance.otherClientsAnimatorController;
-        if (controller == null) return;
+        // The controller a player uses for their own body reacts to Walking/Sprinting/crouching like we need. The one
+        // the game uses for other players doesn't: it only plays the states each player's owner sends over the network.
+        playerController = BetterEmotesCompat.LocalController ?? StartOfRound.Instance.localClientAnimatorController;
+        if (playerController == null) return;
         maskedController = animator.runtimeAnimatorController;
-        animator.runtimeAnimatorController = controller;
-        animator.SetFloat("animationSpeed", 1f);
+        int rigs = SwitchController(playerController);
         usingPlayerAnimations = true;
         if (animator.GetComponent<MimicAnimationEvents>() == null)
         {
             animator.gameObject.AddComponent<MimicAnimationEvents>().Disguise = this;
         }
+        Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex}: player animations on " +
+                           $"({(BetterEmotesCompat.LocalController != null ? "BetterEmotes" : "vanilla")}, {rigs} rig(s) rebuilt)");
+    }
+
+    private int SwitchController(RuntimeAnimatorController controller)
+    {
+        animator.runtimeAnimatorController = controller;
+        animator.Rebind();
+        animator.SetFloat("animationSpeed", 1f);
+        animParams.Clear();
+        foreach (var p in animator.parameters) animParams.Add(p.name);
+        // The Masked's look rig (Animation Rigging) is built on the old controller; without a rebuild it keeps driving
+        // the bones with its own graph.
+        int n = 0;
+        foreach (var rig in Masked.GetComponentsInChildren<RigBuilder>(true))
+        {
+            rig.Clear();
+            if (rig.Build()) n++;
+        }
+        return n;
     }
 
     private void MakeNameTag(PlayerControllerB player)
@@ -175,7 +215,7 @@ internal sealed class MimicDisguise : MonoBehaviour
         nameTagAlpha = copy.GetComponentInChildren<CanvasGroup>(true);
         foreach (var text in copy.GetComponentsInChildren<TextMeshProUGUI>(true))
         {
-            text.text = player.playerUsername;
+            text.text = Name;
             text.enabled = true;
         }
         if (nameTagAlpha != null) nameTagAlpha.alpha = 0f;
@@ -207,31 +247,7 @@ internal sealed class MimicDisguise : MonoBehaviour
 
     // ---- state from the host
 
-    internal void SetState(MimicVisualState s)
-    {
-        State = s;
-        if (s.Hostile && !Revealed && Cfg.RevealOnAttack.Value)
-        {
-            Reveal();
-        }
-    }
-
-    // Drop the disguise: mask and Masked animations back on, no name tag.
-    internal void Reveal()
-    {
-        Revealed = true;
-        foreach (var mask in hiddenMasks)
-        {
-            if (mask != null) mask.SetActive(true);
-        }
-        if (usingPlayerAnimations && maskedController != null)
-        {
-            animator.runtimeAnimatorController = maskedController;
-            usingPlayerAnimations = false;
-        }
-        if (sign != null) sign.enabled = false;
-        SetNameTagVisible(false);
-    }
+    internal void SetState(MimicVisualState s) => State = s;
 
     // ---- every frame
 
@@ -245,28 +261,63 @@ internal sealed class MimicDisguise : MonoBehaviour
         if (velocity.magnitude > 30f) velocity = Vector3.zero; // teleports
         smoothedVelocity = Vector3.Lerp(smoothedVelocity, velocity, 10f * dt);
 
+        KeepMaskHidden();
         if (usingPlayerAnimations && !Masked.isEnemyDead)
         {
-            Animate(dt);
+            UpdateKillPose();
+            if (!inKillPose) Animate();
         }
         UpdateNameTag(dt);
     }
 
-    private void Animate(float dt)
+    // The kill itself uses the Masked's grab animation (the player rig has nothing like it), still without a mask.
+    private void UpdateKillPose()
+    {
+        if (Masked.inKillAnimation && !inKillPose && maskedController != null)
+        {
+            inKillPose = true;
+            SwitchController(maskedController);
+            animator.SetBool("killing", true);
+        }
+        else if (!Masked.inKillAnimation && inKillPose && playerController != null)
+        {
+            inKillPose = false;
+            SwitchController(playerController);
+            HoldingPose();
+        }
+    }
+
+    private void Animate()
     {
         bool moving = Moving && State.Emote == 0;
+        // Same parameters the game sets on your own player body.
+        Vector3 local = transform.InverseTransformDirection(smoothedVelocity);
+        var dir = new Vector2(local.x, local.z);
+        if (dir.sqrMagnitude > 0.0001f) dir.Normalize();
         animator.SetBool("Walking", moving);
         animator.SetBool("Sprinting", moving && State.Sprinting);
+        animator.SetBool("Sideways", moving && Mathf.Abs(dir.y) < 0.3f);
+        // The player's rule: moving mostly backwards or to the left plays the walk in reverse.
+        animator.SetFloat("animationSpeed", moving && dir.y < 0.5f && dir.x < 0.5f ? -1f : 1f);
+        if (State.Crouching && !wasCrouching) animator.SetTrigger("startCrouching");
+        wasCrouching = State.Crouching;
         animator.SetBool("crouching", State.Crouching);
-        float forward = Vector3.Dot(smoothedVelocity, transform.forward);
-        animator.SetFloat("animationSpeed", moving && forward < -0.2f ? -1f : 1f);
+        animator.SetBool("hinderedMovement", false);
 
         animator.SetInteger("emoteNumber", State.Emote);
-        emoteWeight = Mathf.Lerp(emoteWeight, State.Emote > 0 ? 1f : 0f, 10f * dt);
+        emoteWeight = Mathf.Lerp(emoteWeight, State.Emote > 0 ? 1f : 0f, 10f * Time.deltaTime);
         SetLayerWeight("EmotesNoArms", emoteWeight);
         SetLayerWeight("UpperBodyEmotes", 0f);
-        SetLayerWeight("HoldingItemsRightHand", 0f);
-        SetLayerWeight("HoldingItemsBothHands", 0f);
+        // The player's own blend for holding items: the right-hand layer, plus both hands for two-handed things.
+        var held = Inventory != null ? Inventory.Held : null;
+        holdWeight = Mathf.Lerp(holdWeight, held != null ? 1f : 0f, 25f * Time.deltaTime);
+        SetLayerWeight("HoldingItemsRightHand", holdWeight);
+        SetLayerWeight("HoldingItemsBothHands", held == null || held.itemProperties.twoHandedAnimation ? holdWeight : Mathf.Abs(holdWeight - 1f));
+        if (grabValidateAt > 0f && Time.time >= grabValidateAt)
+        {
+            grabValidateAt = -1f;
+            SetBool("GrabValidated", true);
+        }
 
         if (sign != null)
         {
@@ -288,20 +339,168 @@ internal sealed class MimicDisguise : MonoBehaviour
         if (index >= 0) animator.SetLayerWeight(index, weight);
     }
 
+    // Item animations name their own bools (grabAnim); skip any this controller doesn't have.
+    private void SetBool(string? name, bool value)
+    {
+        if (!string.IsNullOrEmpty(name) && animParams.Contains(name!)) animator.SetBool(name, value);
+    }
+
+    private void Trigger(string? name)
+    {
+        if (string.IsNullOrEmpty(name) || !animParams.Contains(name!)) return;
+        animator.ResetTrigger(name);
+        animator.SetTrigger(name);
+    }
+
+    // ---- holding items (MimicInventory), with the parameters the game sets on a player's body
+
+    private bool CanAnimateItems => usingPlayerAnimations && !inKillPose && animator != null;
+
+    internal void OnGrab(GrabbableObject item)
+    {
+        if (!CanAnimateItems) return;
+        SetBool("GrabInvalidated", false);
+        SetBool("GrabValidated", false);
+        SetBool("cancelHolding", false);
+        if (animParams.Contains("Throw")) animator.ResetTrigger("Throw");
+        SetBool("Grab", true);
+        SetBool(item.itemProperties.grabAnim, true);
+        float grabTime = item.itemProperties.grabAnimationTime > 0f ? item.itemProperties.grabAnimationTime : 0.4f;
+        grabValidateAt = Time.time + Mathf.Max(0.15f, grabTime - 0.1f);
+    }
+
+    internal void OnSwitch(GrabbableObject? old, GrabbableObject? now)
+    {
+        if (!CanAnimateItems) return;
+        if (old != null) SetBool(old.itemProperties.grabAnim, false);
+        if (now == null)
+        {
+            SetBool("Grab", false);
+            SetBool("cancelHolding", true);
+            return;
+        }
+        SetBool("Grab", true);
+        SetBool(now.itemProperties.grabAnim, true);
+        if (old != null)
+        {
+            if (now.itemProperties.twoHandedAnimation || old.itemProperties.twoHandedAnimation) Trigger("SwitchHoldAnimationTwoHanded");
+            Trigger("SwitchHoldAnimation");
+            Trigger(now.itemProperties.pocketAnim);
+        }
+        SetBool("GrabValidated", true);
+        SetBool("cancelHolding", false);
+    }
+
+    internal void OnDrop(GrabbableObject? item)
+    {
+        grabValidateAt = -1f;
+        if (!CanAnimateItems) return;
+        SetBool("Grab", false);
+        if (item != null) SetBool(item.itemProperties.grabAnim, false);
+        SetBool("cancelHolding", true);
+        Trigger("Throw");
+    }
+
+    // The controller came back after the kill pose with every parameter reset.
+    private void HoldingPose()
+    {
+        var held = Inventory != null ? Inventory.Held : null;
+        if (held == null) return;
+        SetBool("Grab", true);
+        SetBool(held.itemProperties.grabAnim, true);
+        SetBool("GrabValidated", true);
+        SetBool("cancelHolding", false);
+    }
+
+    // ---- doors
+
+    // Went through an entrance (MimicItems.CrossDoor), on every client: where it comes out, the door sounds players
+    // hear, and inside/outside for the AI and the items it carries.
+    internal void UsedEntrance(EntranceTeleport? door, Vector3 pos, float yaw, bool outside)
+    {
+        var m = Masked;
+        m.timeAtLastUsingEntrance = Time.realtimeSinceStartup;
+        if (m.IsOwner && m.agent != null)
+        {
+            m.agent.enabled = false;
+            transform.position = pos;
+            m.agent.enabled = true;
+        }
+        else
+        {
+            transform.position = pos;
+        }
+        transform.rotation = Quaternion.Euler(0f, yaw, 0f);
+        m.serverPosition = pos;
+        m.targetYRotation = yaw;
+        lastPosition = pos;
+        smoothedVelocity = Vector3.zero;
+        m.SetEnemyOutside(outside);
+        if (m.IsOwner && m.agent != null && m.agent.enabled) m.SetDestinationToPosition(pos);
+        if (door != null)
+        {
+            if (door.exitScript == null) door.FindExitPoint();
+            if (door.exitScript != null) door.PlayAudioAtTeleportPositions();
+        }
+        if (Inventory != null)
+        {
+            foreach (var (_, item) in Inventory.Items) item.isInFactory = !outside;
+        }
+    }
+
+    // ---- head look
+
+    // Replaces the vanilla look code. Vanilla kept its last vertical angle forever and counted sideways angle as
+    // pitch, which left the head tilted up. This aims the head at the real height of what it looks at and eases back
+    // to level, with a little drift like a mouse that's never quite still. The body turn is done by the brain on the
+    // host and reaches everyone else through the normal rotation sync.
+    internal void LookAtFocused()
+    {
+        var m = Masked;
+        if (m.headTiltTarget == null) return;
+        Vector3? point = null;
+        if (!m.inSpecialAnimation)
+        {
+            if (m.lookAtPositionTimer > 0f)
+            {
+                m.lookAtPositionTimer -= Time.deltaTime;
+                point = m.focusOnPosition;
+            }
+            else if (m.stareAtTransform != null && Vector3.Distance(m.stareAtTransform.position, transform.position) <= 80f)
+            {
+                point = m.stareAtTransform.position;
+            }
+        }
+        float target = 0f;
+        if (point.HasValue)
+        {
+            Vector3 d = point.Value - m.headTiltTarget.position;
+            float horizontal = new Vector2(d.x, d.z).magnitude;
+            // Positive x is down, same as headTiltTarget.LookAt in vanilla's stare code.
+            target = Mathf.Clamp(-Mathf.Atan2(d.y, Mathf.Max(horizontal, 0.3f)) * Mathf.Rad2Deg, -45f, 45f);
+        }
+        target += (Mathf.PerlinNoise(Time.time * 0.3f, noiseSeed) - 0.5f) * 7f;
+        pitch = Mathf.Lerp(pitch, target, 6f * Time.deltaTime);
+        m.headTiltTarget.localEulerAngles = new Vector3(pitch, 0f, 0f);
+    }
+
+    // ---- name tag
+
     private void UpdateNameTag(float dt)
     {
         if (nameTagRoot == null || nameTagAlpha == null) return;
         var local = GameNetworkManager.Instance?.localPlayerController;
-        bool can = !Revealed && Masked.enemyEnabled && !Masked.isEnemyDead && local != null && !local.isPlayerDead;
+        bool can = Masked.enemyEnabled && !Masked.isEnemyDead && local != null && !local.isPlayerDead;
         if (!can)
         {
             SetNameTagVisible(false);
             return;
         }
         // Same rule as players: you see the name while looking at them from close by, then it fades.
+        float range = HostServices.IsHost ? Cfg.NameTagRange.Value : ModNetwork.HostNameTagRange;
         var cam = local!.gameplayCamera.transform;
         int mask = StartOfRound.Instance.collidersAndRoomMaskAndDefault | (1 << LayerMask.NameToLayer("Enemies"));
-        if (Physics.Raycast(cam.position, cam.forward, out RaycastHit hit, Cfg.NameTagRange.Value, mask, QueryTriggerInteraction.Collide) &&
+        if (Physics.Raycast(cam.position, cam.forward, out RaycastHit hit, range, mask, QueryTriggerInteraction.Collide) &&
             hit.collider.transform.IsChildOf(transform))
         {
             SetNameTagVisible(true);
@@ -340,13 +539,14 @@ internal sealed class MimicDisguise : MonoBehaviour
         int clip = Random.Range(0, clips.Length);
         if (clip == Masked.previousFootstepClip) clip = (clip + 1) % clips.Length;
         Masked.previousFootstepClip = clip;
-        // Player volumes: 0.9 sprinting, 0.6 walking.
-        float volume = State.Sprinting ? 0.9f : 0.6f;
+        // Player volumes: 0.9 sprinting, 0.6 walking; crouching is quieter.
+        float volume = State.Sprinting ? 0.9f : State.Crouching ? 0.35f : 0.6f;
         Masked.movementAudio.pitch = Random.Range(0.93f, 1.07f);
         Masked.movementAudio.PlayOneShot(clips[clip], volume);
         WalkieTalkie.TransmitOneShotAudio(Masked.movementAudio, clips[clip], volume);
-        RoundManager.Instance.PlayAudibleNoise(transform.position, State.Sprinting ? 22f : 17f, State.Sprinting ? 0.6f : 0.4f, 0,
-            Masked.isInsidePlayerShip && StartOfRound.Instance.hangarDoorsClosed, 7);
+        // Monsters that hunt by sound hear it like a player's step.
+        RoundManager.Instance.PlayAudibleNoise(transform.position, State.Sprinting ? 22f : State.Crouching ? 8f : 17f,
+            State.Sprinting ? 0.6f : State.Crouching ? 0.2f : 0.4f, 0, Masked.isInsidePlayerShip && StartOfRound.Instance.hangarDoorsClosed, 7);
     }
 
     internal void Clap()

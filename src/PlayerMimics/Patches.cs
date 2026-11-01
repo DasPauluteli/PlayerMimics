@@ -1,5 +1,9 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using GameNetcodeStuff;
 using HarmonyLib;
+using UnityEngine;
 
 namespace PlayerMimics;
 
@@ -45,7 +49,7 @@ internal static class MaskedPatches
     [HarmonyPatch(nameof(MaskedPlayerEnemy.SetVisibilityOfMaskedEnemy))]
     private static bool SetVisibility(MaskedPlayerEnemy __instance)
     {
-        if (__instance.GetComponent<MimicDisguise>() == null) return true;
+        if (MimicDisguise.Of(__instance) == null) return true;
         if (!__instance.enemyEnabled)
         {
             __instance.enemyEnabled = true;
@@ -54,48 +58,103 @@ internal static class MaskedPatches
         return false;
     }
 
+    // Disguised Masked look around like players (see MimicDisguise.LookAtFocused).
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(MaskedPlayerEnemy.LookAtFocusedPosition))]
+    private static bool LookAtFocusedPosition(MaskedPlayerEnemy __instance)
+    {
+        var disguise = MimicDisguise.Of(__instance);
+        if (disguise == null) return true;
+        disguise.LookAtFocused();
+        return false;
+    }
+
     // A disguised Masked only kills when it means to.
     [HarmonyPrefix]
     [HarmonyPatch(nameof(MaskedPlayerEnemy.OnCollideWithPlayer))]
     private static bool OnCollideWithPlayer(MaskedPlayerEnemy __instance)
     {
-        var disguise = __instance.GetComponent<MimicDisguise>();
+        var disguise = MimicDisguise.Of(__instance);
         return disguise == null || disguise.State.Hostile;
     }
 
+    // Players never walk around with their arms out, not even while attacking.
     [HarmonyPrefix]
     [HarmonyPatch(nameof(MaskedPlayerEnemy.SetHandsOutClientRpc))]
     private static void NoHandsOut(MaskedPlayerEnemy __instance, ref bool setOut)
     {
-        var disguise = __instance.GetComponent<MimicDisguise>();
-        if (disguise != null && !disguise.Revealed) setOut = false;
+        if (MimicDisguise.Of(__instance) != null) setOut = false;
     }
+
+    // Vanilla turns to every noise and logs each one. Disguised Masked glance at loud ones (MimicBrain.OnNoise).
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(MaskedPlayerEnemy.DetectNoise))]
+    private static bool DetectNoise(MaskedPlayerEnemy __instance, Vector3 noisePosition, float noiseLoudness, int noiseID)
+    {
+        if (MimicDisguise.Of(__instance) == null) return true;
+        if (__instance.IsOwner && !__instance.isEnemyDead && !__instance.inSpecialAnimation)
+        {
+            __instance.GetComponent<MimicBrain>()?.OnNoise(noisePosition, noiseLoudness, noiseID);
+        }
+        return false;
+    }
+
+    // No glowing eyes and no mask sound when it grabs someone.
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(MaskedPlayerEnemy.SetMaskGlow))]
+    private static bool SetMaskGlow(MaskedPlayerEnemy __instance) => MimicDisguise.Of(__instance) == null;
 
     // Tell Coroner who the killer was pretending to be. Runs before Coroner's own "killed by a Masked" fallback.
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
     [HarmonyPatch(nameof(MaskedPlayerEnemy.FinishKillAnimation))]
-    private static void FinishKillAnimation(MaskedPlayerEnemy __instance, bool killedPlayer)
+    private static void FinishKillAnimationPrefix(MaskedPlayerEnemy __instance, bool killedPlayer, out PlayerControllerB? __state)
     {
+        __state = null;
         var victim = __instance.inSpecialAnimationWithPlayer;
-        var disguise = __instance.GetComponent<MimicDisguise>();
-        if (killedPlayer && victim != null && victim.isPlayerDead && disguise != null)
-        {
-            CoronerCompat.OnKill(disguise, victim);
-        }
+        var disguise = MimicDisguise.Of(__instance);
+        if (!killedPlayer || victim == null || disguise == null) return;
+        __state = victim;
+        if (victim.isPlayerDead) CoronerCompat.OnKill(disguise, victim);
+    }
+
+    // After a kill the brain checks who saw it; with no witnesses its cover holds.
+    [HarmonyPostfix]
+    [HarmonyPatch(nameof(MaskedPlayerEnemy.FinishKillAnimation))]
+    private static void FinishKillAnimationPostfix(MaskedPlayerEnemy __instance, PlayerControllerB? __state)
+    {
+        if (__state != null && __instance.IsServer) __instance.GetComponent<MimicBrain>()?.OnKilled(__state);
     }
 
     [HarmonyPostfix]
     [HarmonyPatch(nameof(MaskedPlayerEnemy.HitEnemy))]
     private static void HitEnemy(MaskedPlayerEnemy __instance, PlayerControllerB playerWhoHit)
     {
-        var disguise = __instance.GetComponent<MimicDisguise>();
-        if (disguise != null && !disguise.Revealed && !__instance.isEnemyDead)
+        if (MimicDisguise.Of(__instance) != null && !__instance.isEnemyDead)
         {
             __instance.creatureAnimator.SetTrigger("Damage"); // the player flinch
         }
         if (__instance.IsServer) __instance.GetComponent<MimicBrain>()?.OnHit(playerWhoHit);
     }
+}
+
+[HarmonyPatch(typeof(EnemyAI))]
+internal static class EnemyPatches
+{
+    // Start caches the renderers, then MoreCompany swaps the cosmetics on a disguised Masked and the cached ones are
+    // destroyed. Collect them again (the same way Start does) instead of throwing on the next show or hide.
+    [HarmonyPrefix]
+    [HarmonyPatch(nameof(EnemyAI.EnableEnemyMesh))]
+    private static void EnableEnemyMesh(EnemyAI __instance)
+    {
+        if (__instance is not MaskedPlayerEnemy || MimicDisguise.Of(__instance) == null) return;
+        if (__instance.skinnedMeshRenderers.All(r => r != null) && __instance.meshRenderers.All(r => r != null)) return;
+        __instance.skinnedMeshRenderers = __instance.GetComponentsInChildren<SkinnedMeshRenderer>().Where(Own).ToArray();
+        __instance.meshRenderers = __instance.GetComponentsInChildren<MeshRenderer>().Where(Own).ToArray();
+    }
+
+    private static bool Own(Renderer r) =>
+        r.GetComponentInParent<PlayerControllerB>() == null && r.GetComponentInParent<GrabbableObject>() == null;
 }
 
 [HarmonyPatch(typeof(PlayerControllerB))]
@@ -110,6 +169,19 @@ internal static class PlayerPatches
             HostServices.Instance?.OnPlayerDied(deadPlayerController);
         }
     }
+}
+
+// The Masked prefab carries the player's animation event receiver with no player behind it. With player animations
+// on, every footstep threw a NullReferenceException there (thousands per round). MimicAnimationEvents plays the sounds.
+[HarmonyPatch]
+internal static class PlayerAnimationEventsPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods() =>
+        new[] { "PlayFootstepServer", "PlayFootstepLocal", "LimpForward", "LockArmsToCamera", "UnlockArmsFromCamera" }
+            .Select(n => AccessTools.Method(typeof(PlayerAnimationEvents), n))
+            .Where(m => m != null);
+
+    private static bool Prefix(PlayerAnimationEvents __instance) => __instance.thisPlayerController != null;
 }
 
 [HarmonyPatch(typeof(StartOfRound))]
