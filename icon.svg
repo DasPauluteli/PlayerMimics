@@ -1,12 +1,74 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <rect width="256" height="256" fill="#24262C"/>
-  <g fill="#7C818C">
-    <rect x="70" y="86" width="104" height="104" rx="10"/>
-    <circle cx="122" cy="80" r="22"/>
-    <circle cx="180" cy="138" r="22"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- PlayerMimics icon: a crewmate seen from behind, and the shadow on the wall isn't theirs.
+       Render: rsvg-convert -w 256 -h 256 icon.svg -o icon.png -->
+  <defs>
+    <radialGradient id="wall" cx="50%" cy="40%" r="66%">
+      <stop offset="0" stop-color="#b06a32"/>
+      <stop offset="0.3" stop-color="#7a431f"/>
+      <stop offset="0.65" stop-color="#2e190e"/>
+      <stop offset="1" stop-color="#0a0706"/>
+    </radialGradient>
+    <radialGradient id="helm" cx="42%" cy="22%" r="85%">
+      <stop offset="0" stop-color="#ffa64a"/>
+      <stop offset="0.5" stop-color="#cf661c"/>
+      <stop offset="1" stop-color="#6e300b"/>
+    </radialGradient>
+    <linearGradient id="suit" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7a370d"/>
+      <stop offset="0.5" stop-color="#e07a24"/>
+      <stop offset="1" stop-color="#6e300b"/>
+    </linearGradient>
+    <linearGradient id="tank" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2a2d30"/>
+      <stop offset="0.45" stop-color="#6b7177"/>
+      <stop offset="1" stop-color="#25282b"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2.2"/></filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.5"/></filter>
+    <filter id="noise" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+  </defs>
+
+  <!-- a flashlight on a concrete wall -->
+  <rect width="256" height="256" fill="url(#wall)"/>
+  <rect width="256" height="256" filter="url(#noise)" opacity="0.12"/>
+
+  <!-- the shadow: arms up, claws out -->
+  <g filter="url(#soft)">
+    <g fill="#0d0907">
+      <path d="M78 102 Q78 40 128 38 Q178 40 178 102 L176 130 Q172 164 128 166 Q84 164 80 130 Z"/>
+      <path d="M22 256 Q26 186 78 170 L178 170 Q230 186 234 256 Z"/>
+    </g>
+    <g stroke="#0d0907" stroke-linecap="round" fill="none">
+      <path d="M68 182 Q30 162 28 100 M188 182 Q226 162 228 100" stroke-width="24"/>
+      <path d="M27 104 Q12 86 14 58 M28 100 Q20 76 26 50 M30 100 Q38 78 42 56 M32 104 Q48 90 54 70 M25 112 Q12 110 6 96" stroke-width="6.5"/>
+      <path d="M229 104 Q244 86 242 58 M228 100 Q236 76 230 50 M226 100 Q218 78 214 56 M224 104 Q208 90 202 70 M231 112 Q244 110 250 96" stroke-width="6.5"/>
+    </g>
   </g>
-  <g fill="#24262C">
-    <circle cx="70" cy="138" r="20"/>
-    <circle cx="122" cy="190" r="20"/>
+  <!-- the mask, barely there in the dark -->
+  <path d="M128 50 C160 50 172 72 171 100 C170 132 152 158 128 160 C104 158 86 132 85 100 C84 72 96 50 128 50 Z" fill="#1d1511"/>
+
+  <!-- its face -->
+  <g fill="#ffd9a0" opacity="0.55" filter="url(#glow)">
+    <path d="M90 104 Q107 80 124 102 Q107 95 90 104 Z"/>
+    <path d="M132 102 Q149 80 166 104 Q149 95 132 102 Z"/>
+    <path d="M86 122 Q128 138 170 122 Q128 172 86 122 Z"/>
   </g>
+  <g fill="#f4e8cf" stroke="#f4e8cf" stroke-width="3" stroke-linejoin="round">
+    <path d="M90 104 Q107 80 124 102 Q107 95 90 104 Z"/>
+    <path d="M132 102 Q149 80 166 104 Q149 95 132 102 Z"/>
+    <path d="M86 122 Q128 138 170 122 Q128 172 86 122 Z"/>
+  </g>
+
+  <!-- the crewmate, from behind: suit, oxygen tank, helmet -->
+  <path d="M44 256 Q50 226 92 220 L164 220 Q206 226 212 256 Z" fill="url(#suit)"/>
+  <path d="M94 222 Q87 240 85 256 M162 222 Q169 240 171 256" stroke="#4e2208" stroke-width="7" fill="none"/>
+  <rect x="106" y="226" width="44" height="44" rx="12" fill="url(#tank)"/>
+  <rect x="112" y="240" width="32" height="4" rx="2" fill="#1b1d1f"/>
+  <ellipse cx="128" cy="227" rx="40" ry="9" fill="#3a1a07"/>
+  <path d="M88 200 Q88 160 128 158 Q168 160 168 200 L167 214 Q164 234 128 236 Q92 234 89 214 Z" fill="url(#helm)"/>
+  <path d="M91 218 Q128 242 165 218" stroke="#5a2608" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.8"/>
+  <path d="M100 172 Q112 162 128 161" stroke="#ffd09a" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.7"/>
 </svg>
