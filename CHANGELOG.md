@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- fixed uncomitted files
+
 ## 0.1.0
 
 - Give mimics a player inventory, door use and multi-mimic coordination
