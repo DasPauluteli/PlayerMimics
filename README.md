@@ -3,6 +3,8 @@
 Masked become impostor crewmates. A Masked looks, moves and (with consent) sounds like one of your friends. A local AI
 plays it: it walks with the group, talks on voice chat, carries loot, and waits for the moment nobody's looking.
 
+!["Paul" talks to you at 8:18 AM. Paul died at 7:52 AM.](https://raw.githubusercontent.com/DasPauluteli/PlayerMimics/main/docs/images/preview.jpg)
+
 Replaces Mirage, MirageRevive, LethalMimics and MaskFixes. Don't install it together with them.
 
 ## Features
