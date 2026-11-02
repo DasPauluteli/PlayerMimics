@@ -4,7 +4,7 @@ http://127.0.0.1:5279. Start it with start.ps1 / start.bat (Windows) or start.sh
 
 Based on the AI server of brant's LethalMimicsAI add-on (https://github.com/BKPatt/LethalMimics) and still answers its
 endpoints (/respond, /line). Since then:
-  * Speech recognition: Whisper large-v3-turbo with language detection, on the GPU through PyTorch (gpu_whisper.py)
+  * Speech recognition: Whisper large-v3-turbo (English unless --language says otherwise), on the GPU through PyTorch (gpu_whisper.py)
     when torch has CUDA or ROCm, else faster-whisper (CTranslate2, int8) on the CPU.
   * Voice cloning: Audio8-TTS-Realistic-0.6B in bf16 on the GPU, else the CPU (torch_tts.py). --tts onnx switches to
     the Audio8-TTS-Preview-0.1B ONNX INT8 runtime (onnx_tts.py). The reference clip is encoded once per voice rebuild.
@@ -300,7 +300,7 @@ class Brain:
         self.state = "loading"
         self.error = ""
         self.llm_think_ok = True
-        self.llm_stats = ""  # token counts and timings of the last Ollama call, for the log
+        self.tl = threading.local()  # per request thread: llm_stats (token counts and timings for the log)
         self.round_started = 0.0  # PlayerMimics: chat from before this (minus a minute) is an old round
         self.decide_seq: dict[str, int] = {}  # PlayerMimics: the newest /decide per Masked; older ones stop
         self.decide_lock = threading.Lock()
@@ -471,8 +471,19 @@ class Brain:
             accepted = True
 
         addressed = self.addressed_players(text, exclude=key)
-        log.info("[%s] %r %.1fs accepted=%s %s", p.name, text, seconds, accepted, reason)
+        log.info("[%s] %r %.1fs accepted=%s %s (heard in %.2fs)", p.name, text, seconds, accepted, reason,
+                 getattr(self.tl, "asr_seconds", 0.0))
         return {"text": text, "accepted": accepted, "reason": reason, "addressed": addressed, **self._status(p)}
+
+    def wait_gpu(self, what: str) -> float:
+        """Waits (up to GPU_WAIT) for a streaming line to finish; returns and logs how long that took."""
+        if self.gpu_quiet.is_set():
+            return 0.0
+        t0 = time.time()
+        self.gpu_quiet.wait(GPU_WAIT)
+        waited = time.time() - t0
+        log.info("%s waited %.2fs for a line to finish", what, waited)
+        return waited
 
     def transcribe(self, audio16: np.ndarray) -> tuple[str, tuple[float, float] | None]:
         """Text plus the (start, end) seconds spanned by the spoken words, if known."""
@@ -480,15 +491,19 @@ class Brain:
         if lang == "auto" or self.args.asr_model.endswith(".en"):
             lang = None if lang == "auto" else "en"
         if self.asr_gpu is not None:
-            self.gpu_quiet.wait(GPU_WAIT)
+            self.wait_gpu("speech recognition")
             with self.asr_lock:
+                t0 = time.time()
                 text, span, _ = self.asr_gpu.transcribe(audio16, language=lang)
+            self.tl.asr_seconds = time.time() - t0
             return text, span
         with self.asr_lock:
+            t0 = time.time()
             segments, _ = self.asr.transcribe(audio16.astype(np.float32), language=lang, beam_size=2,
                                               vad_filter=False, condition_on_previous_text=False,
                                               word_timestamps=True)
             segments = list(segments)
+            self.tl.asr_seconds = time.time() - t0
         text = " ".join(s.text.strip() for s in segments).strip()
         words = [w for s in segments for w in (s.words or [])]
         span = (words[0].start, words[-1].end) if words else None
@@ -592,7 +607,7 @@ class Brain:
 
     def llm(self, messages: list[dict], max_tokens: int = 60, temperature: float = 0.9, json_mode: bool = False) -> str:
         a = self.args
-        self.gpu_quiet.wait(GPU_WAIT)  # the local LLM shares the GPU with a streaming line
+        self.wait_gpu("LLM")  # the local LLM shares the GPU with a streaming line
         if a.llm_api == "ollama":
             body = {"model": a.llm_model, "messages": messages, "stream": False, "keep_alive": "30m",
                     "options": {"temperature": temperature, "num_predict": max_tokens}}
@@ -610,7 +625,7 @@ class Brain:
             text = data["message"]["content"]
             pe, ev = data.get("prompt_eval_count") or 0, data.get("eval_count") or 0
             ped, evd = (data.get("prompt_eval_duration") or 0) / 1e9, (data.get("eval_duration") or 0) / 1e9
-            self.llm_stats = f"read {pe} tok in {ped:.2f}s, wrote {ev} tok in {evd:.2f}s"
+            self.tl.llm_stats = f"read {pe} tok in {ped:.2f}s, wrote {ev} tok in {evd:.2f}s"
         else:
             base = a.llm_base.rstrip("/")
             url = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
@@ -630,7 +645,7 @@ class Brain:
             text = self.llm(messages, max_tokens, temperature, json_mode=fmt is not None)
             on_text(text)
             return text
-        self.gpu_quiet.wait(GPU_WAIT)
+        self.wait_gpu("LLM")
         if stop():
             return None
         body = {"model": a.llm_model, "messages": messages, "stream": True, "keep_alive": "30m",
@@ -643,22 +658,28 @@ class Brain:
                                      headers={"Content-Type": "application/json"})
         if a.llm_key:
             req.add_header("Authorization", f"Bearer {a.llm_key}")
-        text = ""
+        text, pieces, t0, first = "", 0, time.time(), 0.0
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 for raw in r:
                     if not raw.strip():
                         continue
                     piece = json.loads(raw)
-                    text += (piece.get("message") or {}).get("content") or ""
+                    content = (piece.get("message") or {}).get("content") or ""
+                    if content:
+                        pieces += 1  # Ollama streams one token per piece
+                        first = first or time.time() - t0
+                    text += content
                     on_text(text)
                     if piece.get("done"):
                         pe, ev = piece.get("prompt_eval_count") or 0, piece.get("eval_count") or 0
                         ped, evd = (piece.get("prompt_eval_duration") or 0) / 1e9, (piece.get("eval_duration") or 0) / 1e9
-                        self.llm_stats = f"read {pe} tok in {ped:.2f}s, wrote {ev} tok in {evd:.2f}s"
+                        self.tl.llm_stats = (f"first token after {first:.2f}s; read {pe} tok in {ped:.2f}s, "
+                                             f"wrote {ev} tok in {evd:.2f}s")
                         break
                     if stop():
-                        self.llm_stats = f"stopped early after {len(text)} chars"
+                        rate = (pieces - 1) / (time.time() - t0 - first) if pieces > 1 and time.time() - t0 > first else 0
+                        self.tl.llm_stats = f"first token after {first:.2f}s, stopped after {pieces} tok ({rate:.0f} tok/s)"
                         break  # leaving the with-block closes the connection
         except urllib.error.HTTPError as e:
             if "think" in body and e.code == 400:
@@ -768,13 +789,28 @@ class Brain:
         new = [f"{self.chat_label(n, m, you)}: {x}" for t, n, x, m in rows if t > since]
         return "\n".join(earlier) or "(nothing)", "\n".join(new) or "(nothing)"
 
-    @staticmethod
-    def style_lines(p: Profile, n: int = 20) -> list[str]:
-        """The player's own recent lines, without duplicates and one-word noise."""
+    # Words that carry no style on their own. A style example made only of these ("Mm-hmm. Mm-hmm.") gets copied as
+    # an opener on every line, and a line opening with the one its last lines opened with is a tell.
+    FILLERS = {"mm", "mmhmm", "mhm", "hmm", "hm", "uh", "um", "uhh", "umm", "uhhuh", "ah", "oh", "okay", "ok", "yeah",
+               "yep", "so", "well", "like", "alright", "right", "huh", "wow", "dude", "bro"}
+
+    @classmethod
+    def filler_words(cls, text: str) -> list[str]:
+        """The words a line opens with that are only filler ("Mm-hmm, yeah, so" -> 3 words)."""
+        out = []
+        for w in re.sub(r"[^a-z' -]", " ", text.lower()).split():
+            if w.replace("-", "") not in cls.FILLERS:
+                break
+            out.append(w)
+        return out
+
+    @classmethod
+    def style_lines(cls, p: Profile, n: int = 20) -> list[str]:
+        """The player's own recent lines, without duplicates, one-word noise and lines that are only filler."""
         seen, out = set(), []
         for line in reversed(p.lines):
             k = re.sub(r"[^a-z0-9' ]", "", line.lower()).strip()
-            if len(k.split()) < 2 or k in seen:
+            if len(k.split()) < 2 or k in seen or len(cls.filler_words(line)) == len(line.split()):
                 continue
             seen.add(k)
             out.append(line)
@@ -993,6 +1029,12 @@ class Brain:
     def _check_say(self, say: str, you: str, talk: dict, own: list[str]) -> str:
         """The line cleaned up, or "" when it's dropped (logged with the reason)."""
         say = self.clean_line(say, you)
+        # Same filler opener as one of its last lines ("Mm-hmm, ..." again): drop the opener, keep the line.
+        opener = self.filler_words(say)
+        if opener and any(self.filler_words(x)[:1] == opener[:1] for x in own[-3:]):
+            rest = re.sub(r"^\W*" + r"\W+".join(re.escape(w) for w in opener) + r"[\W]*", "", say, flags=re.I)
+            if len(rest.split()) >= 2:
+                say = rest[0].upper() + rest[1:]
         dropped = ""
         if say and not talk.get("allowed", True):
             dropped = "not its turn to talk"
@@ -1005,6 +1047,35 @@ class Brain:
             log.info("[%s] dropped %r (%s)", you, say, dropped)
             return ""
         return say
+
+    def _decide_user(self, p: Profile, name: str, you: str, as_name: str, aliases: list[str], style_n: int,
+                     chat_n: int, own: list[str], state: dict, roster: str, allowed: list[str], emotes: list[str],
+                     talk: dict) -> str:
+        """The /decide user message. Stable parts first (who it copies, their lines), so Ollama can reuse the start
+        of the last prompt for this Masked."""
+        earlier, new = self.chat_split(you, p.last_said, limit=chat_n)
+        return "\n".join([
+            (f"You go by: {as_name}, a player in this lobby. You have {name}'s voice, so talk the way {name} does."
+             if as_name else
+             f"You are copying: {name}" + (f" (friends call them {', '.join(aliases)})" if aliases else "")),
+            f"{name}'s real voice chat lines (copy how they talk, never the exact words):",
+            "\n".join(f"- {x}" for x in self.style_lines(p, style_n)) or "- (none yet: talk like a casual gamer)",
+            "",
+            "Your recent lines (don't repeat them or start the same way):",
+            "\n".join(f"- {x}" for x in own) or "- (none)",
+            "",
+            "Voice chat earlier:",
+            earlier,
+            "",
+            "New since you last spoke:",
+            new,
+            "",
+            f"Game state: {json.dumps(state, ensure_ascii=False, separators=(',', ':'))}",
+            f"Players you can target: {roster}",
+            f"Allowed actions: {', '.join(allowed)}",
+            f"Emotes: {', '.join(emotes) if emotes else 'none'}",
+            f"Talk: {json.dumps(talk, ensure_ascii=False)}",
+        ])
 
     def decide(self, req: dict) -> dict:
         """Pick the next behaviour for a PlayerMimics Masked. The mod sends the game state; we answer with JSON.
@@ -1030,34 +1101,23 @@ class Brain:
         emotes = [e for e in req.get("emotes", []) if e in self.DECIDE_EMOTES]
         talk = req.get("talk") if isinstance(req.get("talk"), dict) else {"allowed": True, "why": "", "reply_to": ""}
         can_talk = bool(talk.get("allowed", True))
-        style = self.style_lines(p, 12)
         own = list(dict.fromkeys([x for x in req.get("said_recently", []) if x] + list(p.generated)))[-6:]
         aliases = [] if as_name else p.confirmed_aliases()
-        earlier, new = self.chat_split(you, p.last_said, limit=10)
         state = self._prune({k: req.get(k) for k in ("you", "situation", "round", "players", "items_in_view", "monsters",
                                                       "events", "can_attack", "attack_reason", "current") if k in req})
-        user = "\n".join([
-            (f"You go by: {as_name}, a player in this lobby. You have {name}'s voice, so talk the way {name} does."
-             if as_name else
-             f"You are copying: {name}" + (f" (friends call them {', '.join(aliases)})" if aliases else "")),
-            f"{name}'s real voice chat lines (copy how they talk, never the exact words):",
-            "\n".join(f"- {x}" for x in style) or "- (none yet: talk like a casual gamer)",
-            "",
-            "Your recent lines (don't repeat them or start the same way):",
-            "\n".join(f"- {x}" for x in own) or "- (none)",
-            "",
-            "Voice chat earlier:",
-            earlier,
-            "",
-            "New since you last spoke:",
-            new,
-            "",
-            f"Game state: {json.dumps(state, ensure_ascii=False, separators=(',', ':'))}",
-            f"Players you can target: {roster}",
-            f"Allowed actions: {', '.join(allowed)}",
-            f"Emotes: {', '.join(emotes) if emotes else 'none'}",
-            f"Talk: {json.dumps(talk, ensure_ascii=False)}",
-        ])
+        max_tokens = int(req.get("max_tokens", 120))
+        # Ollama cuts a prompt longer than its context from the front, which loses the instructions (and the cached
+        # prefix). Busy rounds get less old chat and fewer style examples instead. ~3 characters per token here.
+        budget = (self.args.llm_ctx - max_tokens - 150) * 3 - len(self.DECIDE_SYSTEM)
+        for style_n, chat_n in ((12, 10), (8, 7), (5, 5), (3, 3)):
+            user = self._decide_user(p, name, you, as_name, aliases, style_n, chat_n, own, state, roster, allowed,
+                                     emotes, talk)
+            if len(user) <= budget:
+                break
+        else:
+            log.warning("[%s] decide prompt is long (~%d tokens) for a %d token context", you,
+                        (len(user) + len(self.DECIDE_SYSTEM)) // 3, self.args.llm_ctx)
+
 
         # The answer's shape, enforced while it's written: "say" first (only when it may talk, so no tokens go to
         # lines that would be dropped), then only the fields that can matter this time.
@@ -1078,7 +1138,7 @@ class Brain:
         schema = {"type": "object", "properties": props, "required": list(props)}
 
         voice = req.get("voice") if isinstance(req.get("voice"), dict) else None
-        early = {"say": None, "stream": "", "done": False}
+        early = {"say": None, "stream": "", "done": False, "at": 0.0}
 
         # Stop reading as soon as every field is there, or when the model only writes whitespace (it sometimes runs
         # on with line breaks until max_tokens, which cost seconds and used to lose the whole answer).
@@ -1094,13 +1154,14 @@ class Brain:
             if said is None:
                 return
             early["say"] = self._check_say(said, you, talk, own)
+            early["at"] = time.time() - t0
             if early["say"] and voice is not None and not stale():
                 r = self.speak_stream(dict(voice, text=early["say"]))
                 early["stream"] = r.get("stream", "") if r.get("ready") else ""
 
         t0 = time.time()
         raw = self.llm_stream([{"role": "system", "content": self.DECIDE_SYSTEM}, {"role": "user", "content": user}],
-                              int(req.get("max_tokens", 120)), float(req.get("temperature", 0.8)), schema, on_text, finished)
+                              max_tokens, float(req.get("temperature", 0.8)), schema, on_text, finished)
         dt = time.time() - t0
         if raw is None or stale():
             if early["stream"]:
@@ -1131,7 +1192,8 @@ class Brain:
             result["prompt"] = self.DECIDE_SYSTEM + "\n\n" + user
             result["raw"] = raw
         log.info("[%s] decide %.2fs -> %s %s%s %r %s%s (%s)", you, dt, action, target, f" [{item}]" if item else "", say,
-                 emote, " (voice started early)" if result["stream"] else "", self.llm_stats)
+                 emote, f" (voice started after {early['at']:.2f}s)" if result["stream"] else "",
+                 getattr(self.tl, "llm_stats", ""))
         return result
 
     def speak_line(self, req: dict) -> dict:
@@ -1440,8 +1502,11 @@ def main():
     ap.add_argument("--whisper-gpu-model-dir",
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "whisper-large-v3-turbo"),
                     help="PyTorch copy of whisper-large-v3-turbo for --asr-device (hf download openai/whisper-large-v3-turbo)")
-    ap.add_argument("--language", default="Auto",
-                    help="Language players speak: Auto detects it per clip, or English, German, ...")
+    ap.add_argument("--language", default="English",
+                    help="Language players speak: English, German, ..., or Auto to detect it per clip (slower, and "
+                         "short clips get misheard as other languages)")
+    ap.add_argument("--llm-ctx", type=int, default=int(os.environ.get("OLLAMA_CONTEXT_LENGTH") or 4096),
+                    help="The LLM's context in tokens (Ollama: OLLAMA_CONTEXT_LENGTH); long prompts are trimmed to fit")
     ap.add_argument("--max-ref-seconds", type=float, default=12.0)
     ap.add_argument("--min-ref-seconds", type=float, default=4.0)
     ap.add_argument("--cache-dir", default="", help="Enable cross-game voice cache in this folder (empty = off)")

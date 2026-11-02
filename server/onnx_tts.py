@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import tempfile
 from dataclasses import dataclass
 from math import gcd
@@ -90,8 +91,11 @@ class CachedTts:
         return Voice(state, logits, hidden, n)
 
     # --- synthesis ------------------------------------------------------------------
-    def synthesize(self, voice: Voice, text: str, max_new_tokens: int = 512, temperature: float = 0.7,
-                   top_p: float = 0.9, top_k: int = 50, seed: int | None = None) -> np.ndarray:
+    FIRST_CHUNK_FRAMES = 6  # about 0.28 s of audio before the first piece goes out
+
+    def _frames(self, voice: Voice, text: str, max_new_tokens: int, temperature: float, top_p: float, top_k: int,
+                seed: int | None):
+        """Generates the line's codec frames one at a time ([num_codebooks] each)."""
         target = clean_text(text)
         if not target:
             raise ValueError("text must not be empty")
@@ -110,11 +114,10 @@ class CachedTts:
         rng = np.random.default_rng(seed)
         begin, stop, size = int(m["semantic_begin_id"]), int(m["im_end_id"]), int(m["codebook_size"])
         previous: list[int] = []
-        frames: list[np.ndarray] = []
         for step in range(max_new_tokens):
             semantic = rt._sample_semantic(logits, previous, temperature, top_p, top_k, rng)
             if semantic == stop:
-                break
+                return
             previous = (previous + [semantic])[-10:]
             caches = rt._empty_fast_caches()
             rt._fast_step(hidden, 0, True, 0, caches)
@@ -125,12 +128,73 @@ class CachedTts:
             for fp in range(1, self.num_codebooks):
                 token = _sample(rt._fast_step(hidden, token, False, fp, caches), temperature, top_p, top_k, rng)
                 frame.append(token)
-            frames.append(np.asarray(frame, dtype=np.int64))
+            yield np.asarray(frame, dtype=np.int64)
             if step + 1 >= max_new_tokens:
-                break
-            col = np.concatenate([[semantic], frames[-1]]).reshape(1, -1, 1)
+                return
+            col = np.concatenate([[semantic], frame]).reshape(1, -1, 1)
             logits, hidden = rt._slow_step(col, pos, state)
             pos += 1
+
+    def synthesize(self, voice: Voice, text: str, max_new_tokens: int = 512, temperature: float = 0.7,
+                   top_p: float = 0.9, top_k: int = 50, seed: int | None = None) -> np.ndarray:
+        frames = list(self._frames(voice, text, max_new_tokens, temperature, top_p, top_k, seed))
         if not frames:
             raise RuntimeError("model produced no audio")
-        return rt.decode_codes(np.stack(frames, axis=1))
+        return self.rt.decode_codes(np.stack(frames, axis=1))
+
+    def synthesize_stream(self, voice: Voice, text: str, on_audio, max_new_tokens: int = 512,
+                          temperature: float = 0.7, top_p: float = 0.9, top_k: int = 50,
+                          seed: int | None = None) -> np.ndarray:
+        """Like synthesize(), but calls on_audio(wave_so_far, final) while generating, like TorchTts.
+
+        Each piece decodes the whole line so far: decoding only the last frames changes the audio. The newest frame
+        is held back until more follow. Decoding runs on its own thread while generation goes on, starting the next
+        decode as soon as one is done and at least 6 new frames are there, so pieces come as often as the CPU
+        allows. An exception from on_audio (a cancelled line) stops generation. Returns the whole line.
+        """
+        hop = int(self.m["codec_hop_length"])
+        frames: list[np.ndarray] = []
+        wake = threading.Condition()
+        finished = False
+        failure: list[BaseException] = []
+
+        def decoder() -> None:
+            sent = 0  # samples handed out so far
+            done_at = 0  # frames covered by the last decode
+            try:
+                while True:
+                    with wake:
+                        wake.wait_for(lambda: finished or len(frames) - done_at >= self.FIRST_CHUNK_FRAMES)
+                        if finished:
+                            return
+                        n = len(frames)
+                    audio = self.rt.decode_codes(np.stack(frames[:n], axis=1))
+                    done_at = n
+                    stable = min(audio.size, (n - 1) * hop)
+                    if stable > sent:
+                        sent = stable
+                        on_audio(audio[:stable], False)
+            except BaseException as e:  # noqa: BLE001 - handed to the generating thread
+                failure.append(e)
+
+        worker = threading.Thread(target=decoder, name="tts-decode", daemon=True)
+        worker.start()
+        try:
+            for frame in self._frames(voice, text, max_new_tokens, temperature, top_p, top_k, seed):
+                if failure:
+                    break
+                with wake:
+                    frames.append(frame)
+                    wake.notify()
+        finally:
+            with wake:
+                finished = True
+                wake.notify()
+            worker.join()
+        if failure:
+            raise failure[0]
+        if not frames:
+            raise RuntimeError("model produced no audio")
+        wave = self.rt.decode_codes(np.stack(frames, axis=1))
+        on_audio(wave, True)
+        return wave

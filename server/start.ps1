@@ -5,7 +5,7 @@ The mod finds it at http://127.0.0.1:5279. It starts Ollama itself when it isn't
 Extra arguments go to server.py, e.g.
     start.bat --llm-model gemma3:12b          another Ollama model
     start.bat --cache-dir voices              keep voices and speech style between games
-    start.bat --language German               the language players speak (default: detected per clip)
+    start.bat --language German               the language players speak (default: English; Auto detects it)
 #>
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
