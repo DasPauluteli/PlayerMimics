@@ -5,3 +5,6 @@ obj/
 .idea/
 *.user
 Config.Build.user.props
+
+# Empty optional-mod stubs Mortar recreates for the project; nothing uses them.
+src/PlayerMimics/Compat/
