@@ -8,8 +8,9 @@ using UnityEngine;
 
 namespace PlayerMimics;
 
-// Runs on every player. Only while they consented and the host's AI server is up, it cuts the voice chat they are
-// already transmitting into utterances and sends them to the host. Nothing is kept on this computer.
+// Runs on every player. Only while they consented and the host wants voice (its AI server is up, or it plays back
+// random clips without one), it cuts the voice chat they are already transmitting into utterances and sends them to
+// the host. Nothing is kept on this computer.
 internal sealed class VoiceCapture : MonoBehaviour, IMicrophoneSubscriber
 {
     private const float FrameSeconds = 0.02f;
@@ -37,9 +38,10 @@ internal sealed class VoiceCapture : MonoBehaviour, IMicrophoneSubscriber
     private bool ShouldCapture()
     {
         var net = ModNetwork.Instance;
-        if (net == null || !ModNetwork.HostStatusKnown || !ModNetwork.HostAiOnline) return false;
-        if (Cfg.VoiceConsent.Value != ConsentChoice.Allow) return false;
+        if (net == null || !ModNetwork.HostStatusKnown || !ModNetwork.HostWantsVoice) return false;
+        if (Cfg.VoiceConsent.Value != ConsentChoice.Allow || !Cfg.ConsentIncludesReplay.Value) return false;
         if (ModNetwork.HostSavesAudio && !Cfg.ConsentIncludedSaving.Value) return false; // they haven't agreed to that yet
+        if (ModNetwork.HostCollectsText && !Cfg.ConsentIncludedTraining.Value) return false;
         if (comms == null || comms.IsMuted) return false;
         var settings = IngamePlayerSettings.Instance;
         return settings != null && settings.settings.micEnabled;

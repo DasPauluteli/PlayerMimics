@@ -10,7 +10,8 @@ the host's PC next to the game and gives the Masked their brain and their voices
 - **Brain:** an LLM on a local [Ollama](https://ollama.com) decides what each Masked does and says. The default is
   Orion 26B-A4B (an uncensored Gemma 4 finetune that talks like friends on voice chat).
 
-Everything runs locally. Nothing is sent anywhere, and nothing is saved unless you ask for it (`--cache-dir`).
+Everything runs locally. Nothing is sent anywhere, and nothing is saved unless you ask for it (`--cache-dir`, or
+`Brain > CollectTrainingData` in the mod).
 Only the host needs this; the other players only need the mod.
 
 ## What you need
@@ -44,6 +45,7 @@ Useful options (add them after `start.bat` / `./start.sh`):
 | `--llm-model gemma3:12b` | Another Ollama model, for smaller GPUs or to try others. A Hugging Face GGUF works too: `hf.co/<user>/<repo>:Q4_K_M`. A missing model is downloaded on first start. |
 | `--cache-dir voices` | Keep voices, speaking style and nicknames between games (saved in that folder). |
 | `--language German` | The language players speak (default: English; `Auto` detects it for every clip, which is slower and mishears short clips). |
+| `--training-dir data` | Where decisions are saved as text when the mod's `Brain > CollectTrainingData` is on (default: `%LOCALAPPDATA%/LethalMimicsAI/training` on Windows, `~/.local/share/LethalMimicsAI/training` on Linux). |
 | `--llm-ctx 8192` | The LLM context in tokens, if you raised `OLLAMA_CONTEXT_LENGTH`. Longer prompts get trimmed to fit (default: 4096). |
 | `--tts onnx` | The small 0.1B voice model on the CPU, for when the GPU is busy or too small. Lines start a bit later (about 2 s instead of 0.7 s). It needs [Edge0/audio8-TTS-0.1B-ONNX-INT8](https://huggingface.co/Edge0/audio8-TTS-0.1B-ONNX-INT8) in `onnx/model` and the `onnx_runtime_0_1b_int8` folder of [Audio8_TTS](https://github.com/Edge0-AI/Audio8_TTS) in `onnx/repo`. |
 | `--llm-api openai --llm-base http://127.0.0.1:1234/v1` | Any OpenAI-compatible server (LM Studio, llama.cpp) instead of Ollama. |

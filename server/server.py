@@ -190,6 +190,44 @@ def soft_limit(x: np.ndarray, knee: float = 0.9) -> np.ndarray:
 GPU_WAIT = 10.0  # longest a GPU job waits for a streaming line to finish
 
 
+# Chat abbreviations people say letter by letter. The voice reads them as words ("lmao" came out as "la mayo"),
+# so it gets them spelled out; the text everyone sees and the logs keep them as written.
+SPELLED = ("lol", "lmao", "lmfao", "rofl", "wtf", "wth", "omg", "idk", "idc", "brb", "afk", "gg", "ggs", "tbh", "ngl",
+           "smh", "imo", "btw", "irl", "fr", "nvm", "ty", "np", "jk", "af", "rn", "asap", "fyi", "ffs", "stfu", "gtfo")
+SPELLED_RE = re.compile(r"\b(" + "|".join(SPELLED) + r")\b", re.I)
+
+
+def spell_for_voice(text: str) -> str:
+    return SPELLED_RE.sub(lambda m: " ".join(m.group(1).upper()), text)
+
+
+class Clip:
+    """Something a player really said on voice chat, kept so their Masked can play it back word for word."""
+
+    def __init__(self, clip_id: str, audio: np.ndarray, sr: int, text: str, created: float):
+        self.id = clip_id
+        self.audio = audio.astype(np.float32)
+        self.sr = sr
+        self.text = text
+        self.created = created
+        self.played = 0.0  # when a Masked last played it
+
+    @property
+    def seconds(self) -> float:
+        return self.audio.size / self.sr
+
+
+MAX_CLIPS_PER_PLAYER = 60
+CLIP_MIN_SECONDS, CLIP_MAX_SECONDS = 0.5, 6.0
+CLIP_MIN_AGE = 45.0  # a clip this fresh would be heard twice in a row by the same people
+CLIP_REPLAY_GAP = 120.0  # the same recording twice in two minutes is a giveaway
+CLIPS_OFFERED = 12
+# A recording that talks about dying, the mimics or the mod gives the Masked away the moment it's played.
+CLIP_GIVEAWAY = re.compile(
+    r"\b(mimic\w*|masked|masks?|ai|a\.i\.?|bot|bots|mods?|modded|server|logs?|claude|gemini|llm|died|dead|dying|die|"
+    r"killed me|got killed|respawn\w*|revive\w*|spectat\w*|ghost)\b", re.I)
+
+
 class LineCancelled(Exception):
     """Raised inside the TTS callback to stop a line nobody is going to play (/speak_cancel)."""
 
@@ -253,6 +291,8 @@ class Profile:
         self.lines: collections.deque[str] = collections.deque(maxlen=MAX_STYLE_LINES)
         self.generated: collections.deque[str] = collections.deque(maxlen=12)
         self.segments: list[Segment] = []
+        self.clips: collections.deque[Clip] = collections.deque(maxlen=MAX_CLIPS_PER_PLAYER)  # memory only, never saved
+        self.clip_count = 0
         self.prompt = None
         self.prompt_sig: tuple = ()
         self.prompt_quality = 0.0
@@ -304,6 +344,9 @@ class Brain:
         self.round_started = 0.0  # PlayerMimics: chat from before this (minus a minute) is an old round
         self.decide_seq: dict[str, int] = {}  # PlayerMimics: the newest /decide per Masked; older ones stop
         self.decide_lock = threading.Lock()
+        # Training data (the mod's Brain > CollectTrainingData): decisions saved as text, never audio.
+        self.training_lock = threading.Lock()
+        self.collect_since = 0.0  # when collecting started; 0 = off
         self.cache_dir = args.cache_dir
 
     # ---- model loading
@@ -427,6 +470,9 @@ class Brain:
         audio = pcm16_b64_to_float(req["pcm16"])
         audio16 = resample(audio, sr, ANALYSIS_SR)
         source = req.get("source", "voice")
+        # A dead player is only heard by other dead players in game, so the living crew (and the Masked) never heard
+        # it. What they say is also about being dead, which a Masked must never repeat.
+        dead = bool(req.get("dead"))
 
         text, span = self.transcribe(audio16)
         # Players with open mics or background noise send long clips with a few words in them. Keep only the
@@ -445,10 +491,13 @@ class Brain:
             return {"text": "", "accepted": False, "reason": "no speech", "addressed": [], **self._status(p)}
 
         now = time.time()
-        p.lines.append(text)  # style examples (recorded clips count too)
-        if source == "voice":  # only live speech is part of the conversation
+        if not dead:
+            p.lines.append(text)  # style examples (recorded clips count too)
+        if source == "voice" and not dead:  # only live speech is part of the conversation
             self.transcript.append((now, p.name, text, False))
             self.lines_since_alias_scan += 1
+            if not no_voice:
+                self._keep_clip(p, audio, sr, text, now)
 
         seconds = audio16.size / ANALYSIS_SR
         words = len(words_in(text))
@@ -471,9 +520,44 @@ class Brain:
             accepted = True
 
         addressed = self.addressed_players(text, exclude=key)
-        log.info("[%s] %r %.1fs accepted=%s %s (heard in %.2fs)", p.name, text, seconds, accepted, reason,
-                 getattr(self.tl, "asr_seconds", 0.0))
+        log.info("[%s]%s %r %.1fs accepted=%s %s (heard in %.2fs)", p.name, " (dead)" if dead else "", text, seconds,
+                 accepted, reason, getattr(self.tl, "asr_seconds", 0.0))
         return {"text": text, "accepted": accepted, "reason": reason, "addressed": addressed, **self._status(p)}
+
+    def _keep_clip(self, p: Profile, audio: np.ndarray, sr: int, text: str, now: float) -> None:
+        """Keeps a short, clearly spoken line for playback. A newer take of the same words replaces the older one."""
+        seconds = audio.size / sr
+        words = len(words_in(text))
+        if not CLIP_MIN_SECONDS <= seconds <= CLIP_MAX_SECONDS or not 1 <= words <= 14:
+            return
+        if CLIP_GIVEAWAY.search(text):
+            return
+        key = re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+        with p.lock:
+            for old in [c for c in p.clips if re.sub(r"[^a-z0-9 ]", "", c.text.lower()).strip() == key]:
+                p.clips.remove(old)
+            p.clip_count += 1
+            p.clips.append(Clip(f"c{p.clip_count}", audio, sr, text.strip(), now))
+
+    def clips_to_offer(self, p: Profile) -> list[Clip]:
+        """Recordings a Masked could play now: not just said (the same people would hear it twice) and not played
+        lately. Shortest first: short reactions fit the most moments."""
+        now = time.time()
+        with p.lock:
+            ok = [c for c in p.clips if now - c.created >= CLIP_MIN_AGE and now - c.played >= CLIP_REPLAY_GAP]
+        return sorted(ok[-CLIPS_OFFERED * 2:], key=lambda c: c.seconds)[:CLIPS_OFFERED]
+
+    def play_clip(self, p: Profile, clip: Clip, out_sr: int, as_name: str = "") -> str:
+        """A finished /speak_poll stream holding the real recording, so the mod plays it like any other line."""
+        sid = f"{int(time.time() * 1000):x}{len(self.streams):x}c"
+        st = LineStream(sid, out_sr, None)  # gain from the clip itself: it's the player's real level
+        st.add(clip.audio, clip.sr, True)
+        with self.streams_lock:
+            self.streams[sid] = st
+        clip.played = time.time()
+        self._said(p, clip.text, as_name)
+        log.info("[%s] (mimic) plays recording %s %r (%.1fs)", p.name, clip.id, clip.text, clip.seconds)
+        return sid
 
     def wait_gpu(self, what: str) -> float:
         """Waits (up to GPU_WAIT) for a streaming line to finish; returns and logs how long that took."""
@@ -596,7 +680,7 @@ class Brain:
         if p.prompt is None:
             raise RuntimeError(f"No usable voice yet for {p.name}")
         with self.tts_lock:
-            wav = self.tts.synthesize(p.prompt, text, max_new_tokens=self.args.tts_max_tokens, **self.tts_options())
+            wav = self.tts.synthesize(p.prompt, spell_for_voice(text), max_new_tokens=self.args.tts_max_tokens, **self.tts_options())
         sr = self.tts_sr
         peak = float(np.max(np.abs(wav))) if wav.size else 0.0
         if peak > 1e-4:
@@ -774,8 +858,10 @@ class Brain:
     @staticmethod
     def chat_label(name: str, mimic: bool, you: str | None) -> str:
         """With 'you' set, lines are labelled from that mimic's view: its own lines vs. the real player's."""
-        if you is None or name != you:
+        if you is None:
             return name
+        if name != you:
+            return f"{name} (another Masked, not you)" if mimic else name
         return f"You (as {name})" if mimic else f"The real {name} (not you)"
 
     def recent_chat(self, seconds: float = TRANSCRIPT_WINDOW_SECONDS, limit: int = 14, you: str | None = None) -> str:
@@ -912,12 +998,16 @@ class Brain:
         "talk like crew in a sci-fi story: no \"crewmate\", \"captain\", \"team\", \"mission\", \"salvage\".",
         "- Copy the copied player's own style from their real lines: their words, fillers, slang, energy and how much "
         "they swear. Friends swear at and roast each other; if the real lines do, you do too.",
-        "- Never repeat yourself: nothing close to your recent lines, and don't start a line the way a recent one started.",
+        "- Chat abbreviations (lol, lmao, wtf, idk) only if the copied player's real lines use them; otherwise say "
+        "the words or laugh.",
+        "- Never repeat yourself: nothing close to your recent lines, and don't start a line the way a recent one started. "
+        "Other Masked are around too (\"another Masked\" in the chat): never say what they just said, or the same "
+        "kind of line (\"I'm good, that was close\") in other words.",
         "- Never say you died, came back, or are a monster, mimic, AI or bot. When accused, react like a friend: laugh it "
         "off, get annoyed, or turn it around on them.",
         "- Only talk about items you carry (you.inventory) or can see (items_in_view). Don't claim things you couldn't know.",
-        "Sounds like a player: \"yo, where'd you go?\", \"bro there's a fucking bracken!\", \"nah, I'm good\", \"wait wait "
-        "wait!\", \"lmao what?\", \"we need like 300 more\", \"dude, I'm out of stamina\", \"get back to the ship!\".",
+        "Sounds like a player: \"yo, where'd you go?\", \"bro there's a fucking bracken!\", \"dude, that almost got me\", \"wait wait "
+        "wait!\", \"wait, what?\", \"we need like 300 more\", \"dude, I'm out of stamina\", \"get back to the ship!\".",
         "Sounds like a bot (never): \"Let's see what's down this hallway.\", \"I'm just looking for some loot.\", "
         "\"Stay alert, crewmate.\", \"The air feels heavy in here.\"",
         "",
@@ -925,6 +1015,10 @@ class Brain:
         "- allowed false: \"say\" must be \"\".",
         "- reply_to set: answer that person directly, the way a friend would.",
         "- why starts with \"optional\": only say something a real player would actually say right now; usually \"\".",
+        "- \"clip\" plays one of the real recordings of the copied player instead (then \"say\" is \"\"). It's their "
+        "actual voice, so nothing sounds more like them: use one whenever it fits what you'd say right now, like a short "
+        "answer (\"yeah\", \"over here\", \"no way\"), reassuring someone who asks if you're real, or laughing along. "
+        "Only when it makes sense right now; otherwise \"\".",
         "",
         "Actions: follow = walk with a player (the default when someone is near); blend_in = hang around the group and "
         "check spots; stare = stop and look at someone; wander = go check a spot near the crew (scrap, an entrance, the "
@@ -937,6 +1031,9 @@ class Brain:
         "- Once someone knows what you are (cover blown, they call you a mimic and run or keep away), pretending is "
         "pointless: attack them before they get away or warn the others.",
         "- If someone hits you or holds up a sign at you while you're disguised, flee or attack them.",
+        "- \"onto_you\": the name of a player whose words show they're onto you even without saying \"mimic\": "
+        "sarcasm (\"sure, you're totally real\", \"you don't have to tell me\"), sending you somewhere else (\"go the "
+        "other way\", \"you go first\"), stalling or avoiding you, testing you. Otherwise \"\".",
         "- Emote only when it fits (someone dances, a point, a joke). \"sign\" holds up a sign with sign_text.",
         "",
         "Items and doors, done like a player: pick_up = walk to an item from items_in_view and grab it (\"item\": its id); "
@@ -953,13 +1050,16 @@ class Brain:
         "",
         GAME_FACTS,
         "",
-        'Answer with JSON in the format you get, which has only the fields that matter this time: "say" (only when you '
-        'may talk) = "" or the spoken words; "action" = an allowed action; "target" = a player name or ""; "item" = "" '
+        'Answer with JSON in the format you get, which has only the fields that matter this time: "clip" = "" or a '
+        'recording id; "say" (only when you may talk) = "" or the spoken words; "action" = an allowed action; "target" = a player name or ""; "item" = "" '
         'or an item id, slot or name; "emote" = "" or an emote name; "sign_text" = "" or up to 4 words; "why" = up to 6 '
         'words.',
     ])
     # In-world crew talk and AI tells. A line with any of these is dropped.
     BOT_WORDS = re.compile(r"\b(crew ?mates?|captain|comrades?|salvage team|fellow employees?|as an ai|language model)\b", re.I)
+
+    # "I'm good", "I'm okay", "I'm fine": one of these per few minutes across all the Masked; more sounds scripted.
+    REASSURE = re.compile(r"\b(i'?m|i am) (good|okay|ok|fine|alright|all right)\b", re.I)
 
     @staticmethod
     def repeats(text: str, own: list[str], real: list[str], answering: bool = False) -> bool:
@@ -1043,6 +1143,8 @@ class Brain:
         elif say and self.repeats(say, own, [x for _, _, x, mimic in self.chat_rows() if not mimic],
                                   answering=bool(talk.get("reply_to"))):
             dropped = "repeat"
+        elif say and not talk.get("reply_to") and self.REASSURE.search(say) and any(self.REASSURE.search(x) for x in own):
+            dropped = "another \"I'm fine\" line"
         if dropped:
             log.info("[%s] dropped %r (%s)", you, say, dropped)
             return ""
@@ -1050,7 +1152,7 @@ class Brain:
 
     def _decide_user(self, p: Profile, name: str, you: str, as_name: str, aliases: list[str], style_n: int,
                      chat_n: int, own: list[str], state: dict, roster: str, allowed: list[str], emotes: list[str],
-                     talk: dict) -> str:
+                     talk: dict, clips: list[Clip]) -> str:
         """The /decide user message. Stable parts first (who it copies, their lines), so Ollama can reuse the start
         of the last prompt for this Masked."""
         earlier, new = self.chat_split(you, p.last_said, limit=chat_n)
@@ -1064,6 +1166,8 @@ class Brain:
             "Your recent lines (don't repeat them or start the same way):",
             "\n".join(f"- {x}" for x in own) or "- (none)",
             "",
+            *([f"Real recordings of {name} you can play instead of talking (\"clip\": the id):",
+               "\n".join(f'- {c.id}: "{c.text}" ({c.seconds:.1f}s)' for c in clips), ""] if clips else []),
             "Voice chat earlier:",
             earlier,
             "",
@@ -1098,10 +1202,18 @@ class Brain:
         players = req.get("players", [])
         roster = ", ".join(pl.get("name", "?") for pl in players) or "nobody"
         allowed = [a for a in req.get("allowed", self.DECIDE_ACTIONS) if a in self.DECIDE_ACTIONS] or ["blend_in"]
-        emotes = [e for e in req.get("emotes", []) if e in self.DECIDE_EMOTES]
+        emotes = [e for e in req.get("emotes", []) if isinstance(e, str) and re.fullmatch(r"[a-z0-9_]{1,32}", e)][:60]
         talk = req.get("talk") if isinstance(req.get("talk"), dict) else {"allowed": True, "why": "", "reply_to": ""}
         can_talk = bool(talk.get("allowed", True))
+        voice = req.get("voice") if isinstance(req.get("voice"), dict) else None
+        # Real recordings need the streamed playback path (voice) to reach the game.
+        clips = self.clips_to_offer(p) if can_talk and voice is not None else []
+        clip_ids = {c.id: c for c in clips}
         own = list(dict.fromkeys([x for x in req.get("said_recently", []) if x] + list(p.generated)))[-6:]
+        # Lines other Masked said lately count as its own for repeats: two "friends" saying the same thing is a tell.
+        others = [x for _, n, x, mimic in self.chat_rows(180) if mimic and n != you][-6:]
+        own_and_others = own + [x for x in others if x not in own]
+        heard_players = any(not mimic for t, _, _, mimic in self.chat_rows(45))
         aliases = [] if as_name else p.confirmed_aliases()
         state = self._prune({k: req.get(k) for k in ("you", "situation", "round", "players", "items_in_view", "monsters",
                                                       "events", "can_attack", "attack_reason", "current") if k in req})
@@ -1111,7 +1223,7 @@ class Brain:
         budget = (self.args.llm_ctx - max_tokens - 150) * 3 - len(self.DECIDE_SYSTEM)
         for style_n, chat_n in ((12, 10), (8, 7), (5, 5), (3, 3)):
             user = self._decide_user(p, name, you, as_name, aliases, style_n, chat_n, own, state, roster, allowed,
-                                     emotes, talk)
+                                     emotes, talk, clips)
             if len(user) <= budget:
                 break
         else:
@@ -1123,10 +1235,14 @@ class Brain:
         # lines that would be dropped), then only the fields that can matter this time.
         names = {pl.get("name", "").lower(): pl.get("name", "") for pl in players}
         props: dict = {}
+        if clips:  # before "say", so a chosen recording starts playing at once
+            props["clip"] = {"type": "string", "enum": [""] + list(clip_ids)}
         if can_talk:
             props["say"] = {"type": "string", "maxLength": 200}
         props["action"] = {"type": "string", "enum": allowed}
         props["target"] = {"type": "string", "enum": [""] + [n for n in names.values() if n]}
+        if heard_players and names:  # only worth the tokens when someone said something lately
+            props["onto_you"] = {"type": "string", "enum": [""] + [n for n in names.values() if n]}
         if any(a in allowed for a in ("pick_up", "drop", "hold")):
             props["item"] = {"type": "string", "maxLength": 40}
         if emotes:
@@ -1137,8 +1253,7 @@ class Brain:
             props["why"] = {"type": "string", "maxLength": 60}
         schema = {"type": "object", "properties": props, "required": list(props)}
 
-        voice = req.get("voice") if isinstance(req.get("voice"), dict) else None
-        early = {"say": None, "stream": "", "done": False, "at": 0.0}
+        early = {"say": None, "stream": "", "done": False, "at": 0.0, "clip": None}
 
         # Stop reading as soon as every field is there, or when the model only writes whitespace (it sometimes runs
         # on with line breaks until max_tokens, which cost seconds and used to lose the whole answer).
@@ -1150,18 +1265,37 @@ class Brain:
                 early["done"] = True
             if early["say"] is not None or not can_talk:
                 return
+            if clips and early["clip"] is None:
+                fields = self._answer_fields(text)
+                if "clip" not in fields:
+                    return
+                early["clip"] = clip_ids.get(str(fields["clip"]).strip()) or False  # False: it chose to talk
+                if early["clip"]:
+                    early["say"] = early["clip"].text
+                    early["at"] = time.time() - t0
+                    if not stale():
+                        early["stream"] = self.play_clip(p, early["clip"], int(voice.get("sample_rate", 16000)), as_name)
+                    return
             said = self._finished_say(text)
             if said is None:
                 return
-            early["say"] = self._check_say(said, you, talk, own)
+            early["say"] = self._check_say(said, you, talk, own_and_others)
             early["at"] = time.time() - t0
             if early["say"] and voice is not None and not stale():
                 r = self.speak_stream(dict(voice, text=early["say"]))
                 early["stream"] = r.get("stream", "") if r.get("ready") else ""
 
+        collect = bool(req.get("collect"))
+        if collect and not self.collect_since:
+            self.collect_since = time.time()
+            log.info("Collecting training data in %s (starting in %ds)", self.args.training_dir, TRANSCRIPT_WINDOW_SECONDS)
+        elif not collect and self.collect_since:
+            self.collect_since = 0.0
+            log.info("Stopped collecting training data")
+        messages = [{"role": "system", "content": self.DECIDE_SYSTEM}, {"role": "user", "content": user}]
+        temperature = float(req.get("temperature", 0.8))
         t0 = time.time()
-        raw = self.llm_stream([{"role": "system", "content": self.DECIDE_SYSTEM}, {"role": "user", "content": user}],
-                              max_tokens, float(req.get("temperature", 0.8)), schema, on_text, finished)
+        raw = self.llm_stream(messages, max_tokens, temperature, schema, on_text, finished)
         dt = time.time() - t0
         if raw is None or stale():
             if early["stream"]:
@@ -1181,20 +1315,54 @@ class Brain:
         emote = str(out.get("emote", "") or "").strip().lower().replace(" ", "_")
         if emote not in emotes:
             emote = ""
-        say = early["say"] if early["say"] is not None else self._check_say(str(out.get("say", "") or ""), you, talk, own)
+        say = early["say"] if early["say"] is not None else self._check_say(str(out.get("say", "") or ""), you, talk, own_and_others)
+        played = early["clip"].id if early["clip"] and early["stream"] else ""
         sign_text = re.sub(r"[^\x20-\x7E]", "", str(out.get("sign_text", "") or ""))[:24]
         reason = str(out.get("why", "") or out.get("reason", ""))[:80]
         # Which item: an id from items_in_view ("i2"), a slot ("slot1", "belt"), a name, or "all". The mod resolves it.
         item = re.sub(r"[^\w .$'-]", "", str(out.get("item", "") or "")).strip()[:40]
-        result = {"action": action, "target": target, "item": item, "say": say, "emote": emote, "sign_text": sign_text,
+        onto_you = names.get(str(out.get("onto_you", "")).strip().lower(), "")
+        result = {"onto_you": onto_you, "action": action, "target": target, "item": item, "say": say, "emote": emote, "sign_text": sign_text,
                   "reason": reason, "llm_seconds": round(dt, 2), "stream": early["stream"] if say else ""}
+        if collect:
+            self.save_training(messages, raw, schema, temperature, max_tokens, you, result)
         if req.get("log_prompt"):
             result["prompt"] = self.DECIDE_SYSTEM + "\n\n" + user
             result["raw"] = raw
-        log.info("[%s] decide %.2fs -> %s %s%s %r %s%s (%s)", you, dt, action, target, f" [{item}]" if item else "", say,
-                 emote, f" (voice started after {early['at']:.2f}s)" if result["stream"] else "",
+        log.info("[%s] decide %.2fs -> %s %s%s %r %s%s%s (%s)", you, dt, action, target, f" [{item}]" if item else "", say,
+                 emote, f" (onto it: {onto_you})" if onto_you else "", (f" (recording {played} after {early['at']:.2f}s)" if played else
+                         f" (voice started after {early['at']:.2f}s)" if result["stream"] else ""),
                  getattr(self.tl, "llm_stats", ""))
         return result
+
+    def save_training(self, messages: list[dict], raw: str, schema: dict, temperature: float, max_tokens: int,
+                      you: str, result: dict) -> None:
+        """One decision as a line of JSON in the chat format the LLM got it in, plus its answer: messages (system,
+        user, assistant), the answer format, and what the mod did with it. Text only; it stays in the training folder
+        on this PC. Prompts from the first minutes of collecting are skipped: their chat goes back to before players
+        were told."""
+        now = time.time()
+        if now - self.collect_since < TRANSCRIPT_WINDOW_SECONDS:
+            return
+        record = {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
+            "model": self.args.llm_model,
+            "mimic": you,
+            "messages": messages + [{"role": "assistant", "content": raw}],
+            "format": schema,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # After the server's checks: a "say" dropped as a repeat is "" here, which is worth knowing when labelling.
+            "result": {k: result.get(k, "") for k in ("action", "target", "item", "say", "emote", "sign_text", "onto_you")},
+        }
+        path = os.path.join(self.args.training_dir, time.strftime("decisions-%Y-%m-%d.jsonl", time.localtime(now)))
+        try:
+            with self.training_lock:
+                os.makedirs(self.args.training_dir, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            log.warning("Couldn't save training data to %s: %s", path, e)
 
     def speak_line(self, req: dict) -> dict:
         """Synthesize a line in a player's cloned voice. Fails cleanly when no voice is ready yet."""
@@ -1237,10 +1405,11 @@ class Brain:
             with self.tts_lock:
                 self.gpu_quiet.clear()
                 if hasattr(self.tts, "synthesize_stream"):
-                    wave = self.tts.synthesize_stream(p.prompt, text, lambda w, final: st.add(w, self.tts_sr, final),
+                    wave = self.tts.synthesize_stream(p.prompt, spell_for_voice(text), lambda w, final: st.add(w, self.tts_sr, final),
                                                       max_new_tokens=self.args.tts_max_tokens, **self.tts_options())
                 else:  # the ONNX model can't stream: one final chunk
-                    wave = self.tts.synthesize(p.prompt, text, max_new_tokens=self.args.tts_max_tokens, **self.tts_options())
+                    wave = self.tts.synthesize(p.prompt, spell_for_voice(text), max_new_tokens=self.args.tts_max_tokens,
+                                               **self.tts_options())
                     st.add(wave, self.tts_sr, True)
             peak = float(np.max(np.abs(wave))) if wave.size else 0.0
             if peak > 1e-4:
@@ -1455,13 +1624,18 @@ def watch_parent(pid: int):
     os._exit(0)
 
 
+def _data_dir() -> str:
+    """%LOCALAPPDATA%/LethalMimicsAI on Windows, ~/.local/share/LethalMimicsAI elsewhere."""
+    base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else ""
+    return os.path.join(base or os.path.join(os.path.expanduser("~"), ".local", "share"), "LethalMimicsAI")
+
+
 def _default_llm_key() -> str:
     """LLM API key from the environment or a per-user file, so it never sits in a mod profile or on the command line."""
     key = os.environ.get("LETHALMIMICS_LLM_API_KEY", "").strip()
     if key:
         return key
-    base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else ""
-    path = os.path.join(base or os.path.join(os.path.expanduser("~"), ".local", "share"), "LethalMimicsAI", "llm_api_key.txt")
+    path = os.path.join(_data_dir(), "llm_api_key.txt")
     try:
         with open(path, encoding="utf-8") as f:
             return f.read().strip()
@@ -1509,6 +1683,8 @@ def main():
                     help="The LLM's context in tokens (Ollama: OLLAMA_CONTEXT_LENGTH); long prompts are trimmed to fit")
     ap.add_argument("--max-ref-seconds", type=float, default=12.0)
     ap.add_argument("--min-ref-seconds", type=float, default=4.0)
+    ap.add_argument("--training-dir", default=os.path.join(_data_dir(), "training"),
+                    help="Where decisions are saved as text when the host turns on Brain > CollectTrainingData in the mod")
     ap.add_argument("--cache-dir", default="", help="Enable cross-game voice cache in this folder (empty = off)")
     ap.add_argument("--hf-home", default="", help="Where to download models (sets HF_HOME)")
     ap.add_argument("--hf-token", default="", help="Hugging Face token, only needed for private/gated models")

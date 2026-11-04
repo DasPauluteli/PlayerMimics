@@ -45,6 +45,7 @@ internal sealed class HostServices : MonoBehaviour
         nextHealthCheck = 0f;
         wasInShipPhase = null;
         HabitRecorder.Clear();
+        MimicClips.Clear();
     }
 
     // ---- players and consent
@@ -64,9 +65,13 @@ internal sealed class HostServices : MonoBehaviour
         Plugin.Log.LogInfo($"Voice cloning consent from {player?.playerUsername ?? "client " + clientId}: {(allowed ? "allowed" : "denied")}");
         if (had && !allowed && player != null)
         {
+            MimicClips.Forget(PlayerKey(player));
             Post("/forget", new JObject { ["key"] = PlayerKey(player) }, 10, _ => { });
         }
     }
+
+    // Voice is wanted for the AI server, or, without it, for playing back random clips.
+    internal bool WantsVoice => AiOnline || Cfg.RandomClips.Value;
 
     internal bool HasConsent(PlayerControllerB p) => consent.TryGetValue(p.actualClientId, out bool ok) && ok;
 
@@ -172,7 +177,7 @@ internal sealed class HostServices : MonoBehaviour
     {
         if (count <= 0 || count > 200 || rate < 8000 || rate > 48000) return;
         var player = PlayerByClient(sender);
-        if (player == null || !HasConsent(player) || !AiOnline) return; // never accept voice without consent
+        if (player == null || !HasConsent(player) || !WantsVoice) return; // never accept voice without consent
         var key = (sender, utterance);
         if (!uploads.TryGetValue(key, out var upload))
         {
@@ -201,6 +206,10 @@ internal sealed class HostServices : MonoBehaviour
                 Plugin.Log.LogWarning($"Couldn't save {file}: {e.Message}");
             }
         }
+        // Dead players are only heard by other dead players, and talk about being dead: never something to play back.
+        bool dead = player.isPlayerDead;
+        if (Cfg.RandomClips.Value && !dead) MimicClips.Add(PlayerKey(player), samples, rate);
+        if (!AiOnline) return;
         var body = new JObject
         {
             ["key"] = PlayerKey(player),
@@ -208,6 +217,7 @@ internal sealed class HostServices : MonoBehaviour
             ["sample_rate"] = rate,
             ["pcm16"] = AudioCodec.ToPcm16Base64(samples),
             ["source"] = "voice",
+            ["dead"] = dead,
         };
         Post("/ingest", body, 30, result =>
         {
@@ -249,6 +259,14 @@ internal sealed class HostServices : MonoBehaviour
             int seq = 0;
             SendPiece(brain, nextLineId++, ref seq, samples, start: true, final: true);
         });
+    }
+
+    // A recording of the copied player, played from the Masked like one of its lines.
+    internal void PlayClip(MimicBrain brain, float[] samples)
+    {
+        MimicVoice.Fade(samples, AudioCodec.NetRate / 100);
+        int seq = 0;
+        SendPiece(brain, nextLineId++, ref seq, samples, start: true, final: true);
     }
 
     // Plays a line while the server is still making it. Everyone gets the audio as it comes; playback starts once the

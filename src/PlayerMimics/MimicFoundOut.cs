@@ -16,7 +16,10 @@ internal sealed partial class MimicBrain
     {
         "stay away", "get away", "go away", "back off", "don't come", "dont come", "leave me alone",
         "it's following", "its following", "following me", "chasing me",
+        // Sending it somewhere else: "go the other way", "you go first".
+        "other way", "go first", "you first", "walk in front", "in front of me", "go ahead",
         "bleib weg", "geh weg", "hau ab", "lauf weg", "renn weg", "verfolgt mich", "komm nicht", "lass mich",
+        "andere richtung", "geh vor", "du zuerst",
     };
 
     private readonly HashSet<int> foundOut = new(); // these players know; it hunts them

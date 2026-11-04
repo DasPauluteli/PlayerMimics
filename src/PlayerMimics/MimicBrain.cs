@@ -195,6 +195,26 @@ internal sealed partial class MimicBrain : MonoBehaviour
         return (false, "nothing to answer");
     }
 
+    // Without the AI server: play back something its player really said, now and then, like Mirage.
+    private float nextClip;
+
+    private void RandomClip()
+    {
+        var host = HostServices.Instance;
+        if (host == null || !Cfg.RandomClips.Value || (Cfg.UseLlm.Value && host.AiOnline)) return;
+        if (Time.time < nextClip) return;
+        nextClip = Time.time + Cfg.RandomClipSeconds.Value * UnityEngine.Random.Range(0.6f, 1.6f);
+        if (Time.time - lastLine < Cfg.MinSecondsBetweenLines.Value || !Crew(40f).Any() || !host.HasConsent(Copied)) return;
+        // Not over another Masked that just spoke.
+        bool otherJustSpoke = All.Any(b => b != this && b != null && Time.time - b.lastLine < 4f &&
+                                           Vector3.Distance(b.transform.position, transform.position) < 40f);
+        if (otherJustSpoke) return;
+        var clip = MimicClips.Pick(HostServices.PlayerKey(Copied));
+        if (clip == null) return;
+        lastLine = Time.time;
+        host.PlayClip(this, clip);
+    }
+
     private float SmallTalkDelay() => Cfg.SmallTalkSeconds.Value * UnityEngine.Random.Range(0.7f, 1.5f);
 
     // ---- events from patches and host services
@@ -226,9 +246,10 @@ internal sealed partial class MimicBrain : MonoBehaviour
         }
         string who = string.Join(" and ", near.Take(2).Select(p => p.playerUsername));
         AddEvent($"You just got up where the real {name} died a moment ago. Nobody saw it, but {who} " +
-                 $"{(near.Count == 1 ? "was" : "were")} close enough to hear it. Tell them you're okay, like it was a close call. " +
+                 $"{(near.Count == 1 ? "was" : "were")} close enough to hear it. Let them know you're fine the way {name} would " +
+                 "after a close call, in your own words (not \"I'm good, that was close\"). " +
                  "Never say you died.", decideNow: true);
-        MustTalk("you just had a close call nearby: tell them you're okay", 25f);
+        MustTalk("you just had a close call nearby: let them know you're fine, in your own words", 25f);
         nextDecision = Time.time + 0.6f;
         LookAtPlayer(near[0], 2f);
     }
@@ -256,6 +277,9 @@ internal sealed partial class MimicBrain : MonoBehaviour
     {
         "mimic", "masked", "fake", "impostor", "imposter", "monster", "not real", "are you real", "prove", "is that you",
         "not you", "who are you", "that's not", "thats not", "sus",
+        // Sarcasm: "sure, you're totally real", "you don't have to tell me".
+        "you're real", "youre real", "you are real", "totally real", "very real", "don't have to tell me",
+        "dont have to tell me", "suspicious", "bist du echt", "du bist echt",
     };
 
     // How well placed it is to answer this line (lower is better), or -1 when it wouldn't. HostServices lets only the
@@ -348,6 +372,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         HuntIfFoundOut();
         GrabScrapInPassing();
         Ambush();
+        RandomClip();
 
         if (Time.time >= nextDecision || (urgent && Time.time >= lastDecisionAt + 1.5f))
         {
@@ -394,6 +419,10 @@ internal sealed partial class MimicBrain : MonoBehaviour
                 {
                     AddEvent($"{p.playerUsername} is doing the {BetterEmotesCompat.EmoteNames[n]} emote near you",
                         "emote" + p.playerClientId, 20f);
+                }
+                else if (TooManyEmotesCompat.PlayerEmote(p) is string tme)
+                {
+                    AddEvent($"{p.playerUsername} is doing the {tme} emote near you", "emote" + p.playerClientId, 20f);
                 }
             }
             // Keeping their distance while watching you closely is suspicious.
@@ -485,6 +514,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         nextDecision = Time.time + Cfg.DecisionInterval.Value * (quiet ? 2.5f : 1f) * UnityEngine.Random.Range(0.8f, 1.2f);
         if (Current == Behaviour.Emote && Time.time < behaviourUntil) return;
         var host = HostServices.Instance;
+        if (quiet && NothingToThinkAbout()) return;
         if (Cfg.UseLlm.Value && host != null && host.AiOnline)
         {
             bool answering = replyTo != null;
@@ -496,9 +526,11 @@ internal sealed partial class MimicBrain : MonoBehaviour
             pendingRequests++;
             int seq = ++requestSeq;
             lastDecisionAt = Time.time;
+            lastThoughtAt = Time.time;
             decidedSerial = eventSerial;
             var body = BuildContext(out var view);
             body["mimic"] = Masked.NetworkObjectId.ToString();
+            if (Cfg.CollectTrainingData.Value) body["collect"] = true; // the server saves the prompt and answer as text
             var voice = host.VoiceRequest(this);
             if (voice != null) body["voice"] = voice;
             host.Post("/decide", body, 30, result =>
@@ -533,6 +565,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
                     string say = result.Value<string>("say") ?? "";
                     earlyStream = stream;
                     earlyText = say.Trim();
+                    OntoMe(result.Value<string>("onto_you") ?? "");
                     Apply(result.Value<string>("action") ?? "", result.Value<string>("target") ?? "", result.Value<string>("item") ?? "",
                         say, result.Value<string>("emote") ?? "", result.Value<string>("sign_text") ?? "",
                         result.Value<string>("reason") ?? "", view, answering);
@@ -550,6 +583,32 @@ internal sealed partial class MimicBrain : MonoBehaviour
         {
             Scripted();
         }
+    }
+
+    // Most routine decisions change nothing (no line, same behaviour), but they keep the GPU busy, so answers to
+    // players come late. Those are skipped while it's just walking with the group and has nothing it may say or do,
+    // and while another Masked nearby is answering someone.
+    private float lastThoughtAt;
+
+    private bool NothingToThinkAbout()
+    {
+        if (Cfg.UseLlm.Value && HostServices.Instance is { AiOnline: true } && !requestPending &&
+            All.Any(b => b != this && b != null && b.requestPending && b.pendingIsReply))
+        {
+            return true;
+        }
+        if (Time.time - lastThoughtAt > 25f || IsTask(Current) || CanAttack(out _) || TalkPolicy().allowed) return false;
+        return Current is Behaviour.Follow or Behaviour.BlendIn && Crew(40f).Any();
+    }
+
+    // The AI read what someone said as them being onto it (sarcasm, sending it the other way, avoiding it). Twice, or
+    // after an accusation, means they know.
+    private void OntoMe(string name)
+    {
+        var p = AlivePlayers().FirstOrDefault(x => x.playerUsername == name);
+        if (p == null || !IsAudience(p)) return;
+        if (Suspicion(p) >= 0.3f || RecentlyAccused(p)) FoundOut(p, "made it clear they know");
+        else AddSuspicion(p, 0.35f);
     }
 
     // Debug > MimicName: it plays its own player who happens to have the copied player's looks and voice.
@@ -649,7 +708,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
             },
             ["said_recently"] = new JArray(saidRecently),
             ["allowed"] = allowed,
-            ["emotes"] = new JArray(BetterEmotesCompat.Available()),
+            ["emotes"] = new JArray(BetterEmotesCompat.Available().Concat(TooManyEmotesCompat.Available(Copied))),
             ["log_prompt"] = Cfg.LogPrompts.Value,
             ["max_tokens"] = 120, // room for the item field next to a line
         };
@@ -759,6 +818,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         }
 
         int emoteNumber = BetterEmotesCompat.EmoteNumber(emoteName);
+        if (emoteNumber == 0) emoteNumber = TooManyEmotesCompat.EmoteNumber(emoteName);
         if (b == Behaviour.Emote && emoteNumber == 0) emoteNumber = BetterEmotesCompat.EmoteNumber("point");
 
         // Halfway through picking something up or going through a door, a routine decision doesn't cut it short: it

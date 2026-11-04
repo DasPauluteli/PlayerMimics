@@ -13,8 +13,8 @@ Replaces Mirage, MirageRevive, LethalMimics and MaskFixes. Don't install it toge
   radar spin, and it can't be scanned.
 - **Moves like them:** player speed and stamina, crouching, jumping and looking around, and it picks up the copied
   player's own habits during the round.
-- **Sounds like them:** with consent, it talks in their cloned voice and style, answers when you talk to it, and
-  makes small talk.
+- **Sounds like them:** with consent, it talks in their cloned voice and style, answers when you talk to it, makes
+  small talk, and plays back things they really said.
 - **Acts like a crewmate:** grabs scrap, hands things over, takes loot to the ship, uses doors, runs from monsters and
   steps around mines and webs (mostly).
 - **Hunts like a Masked:** it notices when you get suspicious, comes for you once you've figured it out, and if you
@@ -22,7 +22,7 @@ Replaces Mirage, MirageRevive, LethalMimics and MaskFixes. Don't install it toge
 - **Revives:** players who die with nobody watching can get back up as a Masked copying them.
 
 Everyone in the lobby needs the mod. Only the host needs the AI server. Without the server, Masked still disguise
-themselves and follow simple rules; they just don't talk.
+themselves and follow simple rules, and now and then play back something their player really said, like Mirage.
 
 ## Host only: the AI server
 
@@ -52,6 +52,10 @@ The first time you join a PlayerMimics lobby, a popup asks whether your voice ma
 Only if you allow it does your voice chat go to the host. Nothing is saved to disk unless the host turns that on, and
 then the popup says so. You can change your answer in the config (`Voice > VoiceCloningConsent`).
 
+Hosts can turn on `Brain > CollectTrainingData` to help train an AI for the mod: the AI server then saves every
+decision as text (the prompt and the answer, in the chat format the AI gets) in its `training` folder. Never audio.
+The popup tells players, and only players who allow it are heard while it's on.
+
 ## Settings worth knowing
 
 All host only, in `BepInEx/config/com.pauluteli.PlayerMimics.cfg` (or LethalConfig):
@@ -59,4 +63,5 @@ All host only, in `BepInEx/config/com.pauluteli.PlayerMimics.cfg` (or LethalConf
 - `Aggression`: how likely a Masked is to go for someone who's alone with it (0 to 1).
 - `MinSecondsBeforeAttack`: how long it blends in before attacking in front of others.
 - `Revive > ChancePercent`: how often dead players come back as a Masked.
+- `RandomClipsWithoutServer`, `RandomClipSeconds`: the Mirage-style clips when there's no AI server.
 - `SpawnMaskedKey`, `ShowBrainOverlay`, `NoAttack`: for trying it out alone.

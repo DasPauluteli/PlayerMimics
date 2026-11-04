@@ -71,12 +71,25 @@ internal static class CoronerBridge
             "Trusted the wrong crewmate.",
             "Never asked for a second opinion.",
             "Walked with the Impostor.",
+            "Counted the crew. Got one too many.",
+            "Was sure it was a friend.",
+            "Didn't notice the extra crewmate.",
+            "Never checked who they were talking to.",
+            "Was led away by a familiar face.",
+            "Heard a friendly voice. It wasn't.",
+            "Let the wrong one carry the scrap.",
+            "Thought everyone made it back to the ship.",
         });
         Inject(SelfTag, new[]
         {
             "Was killed by a Masked disguised as themselves.",
             "Met their own double. It went badly.",
             "Was replaced.",
+            "Was killed by their own face.",
+            "Found out what they look like from behind.",
+            "Had a familiar voice in their ear.",
+            "Was outplayed by themselves.",
+            "Lost an argument with themselves.",
         });
         Plugin.Log.LogInfo("Coroner integration on");
     }
@@ -99,7 +112,18 @@ internal static class CoronerBridge
         $"Trusted {name}. It wasn't {name}.",
         $"Followed {name} somewhere quiet.",
         $"Should have asked {name} a security question.",
-        $"Got too close to \"{name}\".",
+        $"Got too close to the thing wearing {name}.",
+        $"Thought {name} was acting a bit off.",
+        $"Took {name} at their word.",
+        $"Was walked home by {name}. Not the real one.",
+        $"Asked {name} to wait up. It did.",
+        $"Answered when {name} called.",
+        $"Followed {name}'s voice into the dark.",
+        $"Was told by {name} that it was safe.",
+        $"Stuck with {name}. Big mistake.",
+        $"Never saw what was wearing {name}.",
+        $"Didn't know {name} had already died.",
+        $"Learned {name} wasn't {name}.",
     };
 
     // Coroner keys must be valid XML names, and player names aren't, so key by a hash of the name.

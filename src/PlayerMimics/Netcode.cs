@@ -15,7 +15,9 @@ internal sealed class ModNetwork : NetworkBehaviour
     // What the host told us. Clients use it for the consent popup and to decide whether to capture voice.
     internal static bool HostStatusKnown;
     internal static bool HostAiOnline;
+    internal static bool HostWantsVoice; // the AI server is up, or the host plays back random clips without it
     internal static bool HostSavesAudio;
+    internal static bool HostCollectsText; // the AI server saves decisions as text for training
     internal static float HostNameTagRange = 5f; // host's setting, so nobody can see Masked name tags from further away
 
     public override void OnNetworkSpawn()
@@ -52,15 +54,18 @@ internal sealed class ModNetwork : NetworkBehaviour
     internal void BroadcastHostStatus()
     {
         if (!IsServer || HostServices.Instance == null) return;
-        HostStatusClientRpc(HostServices.Instance.AiOnline, Cfg.SaveAudioToDisk.Value, Cfg.NameTagRange.Value);
+        HostStatusClientRpc(HostServices.Instance.AiOnline, HostServices.Instance.WantsVoice, Cfg.SaveAudioToDisk.Value,
+            HostServices.Instance.AiOnline && Cfg.CollectTrainingData.Value, Cfg.NameTagRange.Value);
     }
 
     [ClientRpc]
-    private void HostStatusClientRpc(bool aiOnline, bool savesAudio, float nameTagRange)
+    private void HostStatusClientRpc(bool aiOnline, bool wantsVoice, bool savesAudio, bool collectsText, float nameTagRange)
     {
         HostStatusKnown = true;
         HostAiOnline = aiOnline;
+        HostWantsVoice = wantsVoice;
         HostSavesAudio = savesAudio;
+        HostCollectsText = collectsText;
         HostNameTagRange = Mathf.Clamp(nameTagRange, 0f, 20f);
     }
 

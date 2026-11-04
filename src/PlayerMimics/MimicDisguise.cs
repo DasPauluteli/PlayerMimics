@@ -39,6 +39,7 @@ internal sealed class MimicDisguise : MonoBehaviour
     private Vector3 lastPosition;
     private Vector3 smoothedVelocity;
     private float emoteWeight;
+    private int playingEmote;
     private float lastFootstep;
     private bool wasCrouching;
     private float pitch;
@@ -48,6 +49,9 @@ internal sealed class MimicDisguise : MonoBehaviour
     private float noiseSeed;
     private readonly HashSet<string> animParams = new();
     private float holdWeight;
+    // Arm IK the Masked model brings along. The player clips pose the arms on their own; an IK still pulling a hand
+    // toward its old target left the right arm bent forward as if holding something.
+    private readonly List<IRigConstraint> armRigs = new();
     private float grabValidateAt = -1f;
 
     internal bool Moving => smoothedVelocity.magnitude > 0.35f;
@@ -175,12 +179,34 @@ internal sealed class MimicDisguise : MonoBehaviour
         maskedController = animator.runtimeAnimatorController;
         int rigs = SwitchController(playerController);
         usingPlayerAnimations = true;
+        FindArmRigs();
         if (animator.GetComponent<MimicAnimationEvents>() == null)
         {
             animator.gameObject.AddComponent<MimicAnimationEvents>().Disguise = this;
         }
         Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex}: player animations on " +
                            $"({(BetterEmotesCompat.LocalController != null ? "BetterEmotes" : "vanilla")}, {rigs} rig(s) rebuilt)");
+    }
+
+    private void FindArmRigs()
+    {
+        armRigs.Clear();
+        var found = new List<string>();
+        foreach (var c in Masked.GetComponentsInChildren<MonoBehaviour>(true))
+        {
+            Transform? tip = c switch
+            {
+                TwoBoneIKConstraint two => two.data.tip,
+                ChainIKConstraint chain => chain.data.tip,
+                _ => null,
+            };
+            if (tip == null || c is not IRigConstraint rig) continue;
+            string bone = tip.name.ToLowerInvariant();
+            if (!bone.Contains("hand") && !bone.Contains("arm")) continue;
+            armRigs.Add(rig);
+            found.Add($"{c.name} -> {tip.name} ({rig.weight:0.##})");
+        }
+        if (found.Count > 0) Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex}: arm IK turned off: {string.Join(", ", found)}");
     }
 
     private int SwitchController(RuntimeAnimatorController controller)
@@ -308,10 +334,21 @@ internal sealed class MimicDisguise : MonoBehaviour
         animator.SetBool("crouching", State.Crouching);
         animator.SetBool("hinderedMovement", false);
 
-        animator.SetInteger("emoteNumber", State.Emote);
-        emoteWeight = Mathf.Lerp(emoteWeight, State.Emote > 0 ? 1f : 0f, 10f * Time.deltaTime);
+        // TooManyEmotes emotes (numbers from its Base up) are played by its own controller on top of this animator.
+        int vanillaEmote = State.Emote < TooManyEmotesCompat.Base ? State.Emote : 0;
+        if (State.Emote != playingEmote)
+        {
+            if (playingEmote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Stop(Masked);
+            if (State.Emote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Play(Masked, State.Emote);
+            playingEmote = State.Emote;
+        }
+        animator.SetInteger("emoteNumber", vanillaEmote);
+        emoteWeight = Mathf.Lerp(emoteWeight, vanillaEmote > 0 ? 1f : 0f, 10f * Time.deltaTime);
         SetLayerWeight("EmotesNoArms", emoteWeight);
         SetLayerWeight("UpperBodyEmotes", 0f);
+        // Doors, levers and the terminal play here for players, who fade it out after; it never plays for a Masked.
+        SetLayerWeight("SpecialAnimations", 0f);
+        foreach (var rig in armRigs) rig.weight = 0f;
         // The player's own blend for holding items: the right-hand layer, plus both hands for two-handed things.
         var held = Inventory != null ? Inventory.Held : null;
         holdWeight = Mathf.Lerp(holdWeight, held != null ? 1f : 0f, 25f * Time.deltaTime);

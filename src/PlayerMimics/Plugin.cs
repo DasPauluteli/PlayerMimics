@@ -13,6 +13,7 @@ namespace PlayerMimics;
 [BepInPlugin(MyPluginInfo.Id, MyPluginInfo.Name, MyPluginInfo.Version)]
 [BepInDependency("BetterEmotes", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInDependency("BestEmotes", BepInDependency.DependencyFlags.SoftDependency)]
+[BepInDependency("FlipMods.TooManyEmotes", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInDependency("me.swipez.melonloader.morecompany", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInDependency("com.elitemastereric.coroner", BepInDependency.DependencyFlags.SoftDependency)]
 [BepInProcess("Lethal Company.exe")]
@@ -31,7 +32,9 @@ public class Plugin : BaseUnityPlugin
             Log.LogInfo($"{MyPluginInfo.Name} is turned off in its config");
             return;
         }
-        new Harmony(MyPluginInfo.Id).PatchAll(typeof(Plugin).Assembly);
+        var harmony = new Harmony(MyPluginInfo.Id);
+        harmony.PatchAll(typeof(Plugin).Assembly);
+        TooManyEmotesCompat.Patch(harmony);
         CoronerCompat.Init();
 
         // One object for the work that isn't tied to a Masked: consent popup, voice capture, debug keys, host services.
@@ -63,6 +66,8 @@ internal static class Cfg
     internal static ConfigEntry<float> CoverBlownSuspicion = null!;
     internal static ConfigEntry<float> MinSecondsBetweenLines = null!;
     internal static ConfigEntry<float> SmallTalkSeconds = null!;
+    internal static ConfigEntry<bool> RandomClips = null!;
+    internal static ConfigEntry<float> RandomClipSeconds = null!;
     internal static ConfigEntry<float> WalkSpeed = null!;
     internal static ConfigEntry<float> NameTagRange = null!;
     internal static ConfigEntry<bool> MonstersNoticeMimics = null!;
@@ -81,6 +86,8 @@ internal static class Cfg
 
     internal static ConfigEntry<ConsentChoice> VoiceConsent = null!;
     internal static ConfigEntry<bool> ConsentIncludedSaving = null!;
+    internal static ConfigEntry<bool> ConsentIncludesReplay = null!;
+    internal static ConfigEntry<bool> ConsentIncludedTraining = null!;
     internal static ConfigEntry<Key> ResetConsentKey = null!;
     internal static ConfigEntry<float> MimicVoiceVolume = null!;
     internal static ConfigEntry<bool> StreamLines = null!;
@@ -96,6 +103,7 @@ internal static class Cfg
     internal static ConfigEntry<bool> NoAttack = null!;
     internal static ConfigEntry<bool> RevealMasked = null!;
     internal static ConfigEntry<bool> SaveAudioToDisk = null!;
+    internal static ConfigEntry<bool> CollectTrainingData = null!;
 
     // "Host only" settings are read on the host; the values everyone needs are sent to the clients. "Per player"
     // settings belong to each player.
@@ -114,6 +122,11 @@ internal static class Cfg
         CoverBlownSuspicion = c.Bind("Brain", "CoverBlownSuspicion", 0.7f,
             "Host only: suspicion (0-1) at which a Masked counts its cover as blown and may attack right away.");
         MinSecondsBetweenLines = c.Bind("Brain", "MinSecondsBetweenLines", 4f, "Host only: shortest gap between two lines of one Masked.");
+        RandomClips = c.Bind("Voice", "RandomClipsWithoutServer", true,
+            "Host only: without the AI server, a Masked now and then plays back something its player really said on " +
+            "voice chat, like Mirage. Only players who allowed their voice are recorded; nothing is saved.");
+        RandomClipSeconds = c.Bind("Voice", "RandomClipSeconds", 25f,
+            "Host only: about how many seconds between those clips.");
         SmallTalkSeconds = c.Bind("Brain", "SmallTalkSeconds", 60f,
             "Host only: about how many seconds a Masked waits before saying something unprompted. It always answers when talked to.");
         WalkSpeed = c.Bind("Brain", "WalkSpeed", 4.6f,
@@ -158,6 +171,11 @@ internal static class Cfg
             "your voice is made. Deny: it isn't sent. Unset shows the popup again.");
         ConsentIncludedSaving = c.Bind("Voice", "ConsentIncludedSaving", false,
             "Per player: set when you allowed cloning while a host was saving audio to disk. Managed by the popup.");
+        ConsentIncludesReplay = c.Bind("Voice", "ConsentIncludesReplay", false,
+            "Per player: set when you allowed your voice knowing short things you said can be played back as they were. " +
+            "Managed by the popup.");
+        ConsentIncludedTraining = c.Bind("Voice", "ConsentIncludedTraining", false,
+            "Per player: set when you allowed your voice while the host was collecting training data. Managed by the popup.");
         ResetConsentKey = c.Bind("Voice", "ResetConsentKey", Key.None,
             "Per player: key that clears your consent choice and shows the popup again. None turns it off.");
         MimicVoiceVolume = c.Bind("Voice", "MimicVoiceVolume", 1f, "Per player: volume of AI voices on your end.");
@@ -184,5 +202,9 @@ internal static class Cfg
         RevealMasked = c.Bind("Debug", "RevealMasked", false, "Host only: shows a red marker on every Masked, through walls. Only the host sees it.");
         SaveAudioToDisk = c.Bind("Debug", "SaveAudioToDisk", false,
             "Host only: keep every received voice clip as a WAV file in BepInEx/PlayerMimics/audio. The consent popup tells players.");
+        CollectTrainingData = c.Bind("Brain", "CollectTrainingData", false,
+            "Host only: the AI server saves every decision as text (the prompt the AI got and its answer, no audio) on this " +
+            "PC, for training an AI for the mod later. The consent popup tells players, and only those who allow it are heard.");
+        CollectTrainingData.SettingChanged += (_, _) => ModNetwork.Instance?.BroadcastHostStatus();
     }
 }
