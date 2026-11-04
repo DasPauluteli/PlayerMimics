@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0
+
+- Masked play back real things their player said on voice chat, and the AI picks when ("I'm real!", "over here").
+  Without the AI server they play random clips now and then, like Mirage (`RandomClipsWithoutServer`,
+  `RandomClipSeconds`). Clips about dying, the mimics or the mod are never kept, and dead players are never recorded
+- TooManyEmotes support: Masked use the emotes their player has unlocked
+- Masked notice more: sarcasm ("sure, you're totally real") and being sent the other way give them away too
+- Hitting a Masked turns it on you (a stop sign still makes it run), and killed Masked fall over instead of standing
+- Masked shut out of the ship wait at the door and ask to be let in, begging once the ship takes off
+- More natural talk: no more "lmao" unless their player says it (abbreviations are spelled out for the voice), no
+  "I'm good, that was close" from every Masked, and Masked don't repeat each other
+- Faster answers with several Masked around: they skip thinking when nothing changed and let the one being talked to
+  answer first
+- Hosts can collect training data for a future AI for the mod (`CollectTrainingData`, off by default): decisions are
+  saved as text on the host's PC, never audio, and the popup asks players again while it's on
+- The voice popup looks like the game's pause menu, and you no longer turn while it's open
+- More Coroner death messages
+- Fixed: the right arm held up when holding nothing
+- New icon
+
 ## 1.0.0
 
 - Masked copy their player's habits: how they look around, crouch-spam, jump and sprint in different situations

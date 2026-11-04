@@ -611,6 +611,7 @@ internal sealed partial class MimicBrain
     private void GoToShipStep()
     {
         if (Finishing()) return;
+        if (WaitAtShutDoor()) return;
         if (shipSpot == Vector3.zero) shipSpot = ShipSpot();
         bool inRoom = InShipRoom();
         if (!inRoom) shipRoomSince = -1f;

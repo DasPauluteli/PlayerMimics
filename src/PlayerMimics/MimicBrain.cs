@@ -259,18 +259,24 @@ internal sealed partial class MimicBrain : MonoBehaviour
         if (by == null) return;
         string item = by.currentlyHeldObjectServer != null ? by.currentlyHeldObjectServer.itemProperties.itemName : "their fists";
         AddEvent($"{by.playerUsername} hit you with {item}!", decideNow: true);
-        AddSuspicion(by, 0.6f);
         threatenedUntil = Time.time + 40f;
-        if (!CoverBlown) MustTalk($"{by.playerUsername} just hit you: react like a player who got hit by a friend", 8f);
         // Hit with a sign (stop sign, yield sign) while still disguised: run.
         if (item.IndexOf("sign", StringComparison.OrdinalIgnoreCase) >= 0 && !CoverBlown)
         {
+            AddSuspicion(by, 0.6f);
             FleeFrom(by, 8f);
+            return;
         }
-        else if (CoverBlown && !Cfg.NoAttack.Value)
+        if (Cfg.NoAttack.Value)
         {
-            SetBehaviour(Behaviour.Attack, by, 20f); // switch to whoever angered it
+            AddSuspicion(by, 0.6f);
+            return;
         }
+        // Anything else: it turns on them, like any Masked that gets hit.
+        FoundOut(by, "hit you");
+        if (IsTask(Current)) FinishTask(TaskGaveUp());
+        SetBehaviour(Behaviour.Attack, by, 20f);
+        PushOverlay();
     }
 
     private static readonly string[] suspiciousWords =
@@ -372,6 +378,7 @@ internal sealed partial class MimicBrain : MonoBehaviour
         HuntIfFoundOut();
         GrabScrapInPassing();
         Ambush();
+        NoticeShutOut();
         RandomClip();
 
         if (Time.time >= nextDecision || (urgent && Time.time >= lastDecisionAt + 1.5f))

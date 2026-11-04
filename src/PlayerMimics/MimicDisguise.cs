@@ -27,6 +27,7 @@ internal sealed class MimicDisguise : MonoBehaviour
     private RuntimeAnimatorController? playerController;
     private bool usingPlayerAnimations;
     private bool inKillPose;
+    private bool deadPose;
     private readonly List<GameObject> hiddenMasks = new();
 
     private Transform? nameTagRoot;
@@ -297,6 +298,10 @@ internal sealed class MimicDisguise : MonoBehaviour
             UpdateKillPose();
             if (!inKillPose) Animate();
         }
+        else if (usingPlayerAnimations && !deadPose)
+        {
+            FallDead();
+        }
         UpdateNameTag(dt);
     }
 
@@ -315,6 +320,19 @@ internal sealed class MimicDisguise : MonoBehaviour
             SwitchController(playerController);
             HoldingPose();
         }
+    }
+
+    // The game plays the Masked's fall by setting "Dead" on its animator, which the player animations don't have, so a
+    // dead disguised Masked kept standing. Back on its own animations, it falls like any dead Masked (on every client).
+    private void FallDead()
+    {
+        deadPose = true;
+        if (playingEmote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Stop(Masked);
+        playingEmote = 0;
+        if (maskedController == null) return;
+        SwitchController(maskedController);
+        SetBool("Stunned", false);
+        SetBool("Dead", true);
     }
 
     private void Animate()
