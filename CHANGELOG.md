@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0
+## 1.1.1
 
 - Masked play back real things their player said on voice chat, and the AI picks when ("I'm real!", "over here").
   Without the AI server they play random clips now and then, like Mirage (`RandomClipsWithoutServer`,
