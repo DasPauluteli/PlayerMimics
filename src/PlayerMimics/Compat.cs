@@ -10,6 +10,7 @@ internal static class BetterEmotesCompat
 {
     private static bool looked;
     private static FieldInfo? localField;
+    private static FieldInfo? othersField;
     private static FieldInfo? signPrefabField;
     private static FieldInfo? clapsField;
 
@@ -25,7 +26,9 @@ internal static class BetterEmotesCompat
         if (!Installed) return;
         try
         {
-            localField = AccessTools.Field(AccessTools.TypeByName("BetterEmote.Patches.EmotePatch"), "local");
+            var patch = AccessTools.TypeByName("BetterEmote.Patches.EmotePatch");
+            localField = AccessTools.Field(patch, "local");
+            othersField = AccessTools.Field(patch, "others");
             var localPlayer = AccessTools.TypeByName("BetterEmote.AssetScripts.LocalPlayer");
             signPrefabField = AccessTools.Field(localPlayer, "SignPrefab");
             clapsField = AccessTools.Field(AccessTools.TypeByName("BetterEmote.AssetScripts.CustomAudioAnimationEvent"), "claps");
@@ -36,15 +39,24 @@ internal static class BetterEmotesCompat
         }
     }
 
-    // The animator controller BetterEmotes gives your own player: the player animations plus all its emotes, driven
-    // by the parameters (Walking, Sprinting, emoteNumber...) a Masked can set. The one it gives other players only
-    // follows the animation states their owner sends, so a Masked using it never walks.
+    // The animator controllers BetterEmotes gives players: "local" for your own body (driven by parameters like
+    // Walking and emoteNumber) and "others" for everyone else's (plays the states their owner sends). Both carry
+    // its emotes. MimicAnimator uses them the same way.
     internal static RuntimeAnimatorController? LocalController
     {
         get
         {
             Look();
             return localField?.GetValue(null) as RuntimeAnimatorController;
+        }
+    }
+
+    internal static RuntimeAnimatorController? OthersController
+    {
+        get
+        {
+            Look();
+            return othersField?.GetValue(null) as RuntimeAnimatorController;
         }
     }
 

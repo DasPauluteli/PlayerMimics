@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+- Masked are animated the way the game animates other players on your screen, instead of with your own
+  first-person body animations: no more "ninja run" arms, and items are held like players hold them
+- Masked come out of a kill still walking and holding what they had
+
 ## 1.1.1
 
 - Masked play back real things their player said on voice chat, and the AI picks when ("I'm real!", "over here").

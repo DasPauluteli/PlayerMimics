@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using GameNetcodeStuff;
 using TMPro;
 using UnityEngine;
-using UnityEngine.Animations.Rigging;
 
 namespace PlayerMimics;
 
@@ -22,10 +21,7 @@ internal sealed class MimicDisguise : MonoBehaviour
     internal string DebugText = "";
     internal MimicInventory? Inventory;
 
-    private Animator animator = null!;
-    private RuntimeAnimatorController? maskedController;
-    private RuntimeAnimatorController? playerController;
-    private bool usingPlayerAnimations;
+    private MimicAnimator? anim; // null when the Masked keeps its own animations
     private bool inKillPose;
     private bool deadPose;
     private readonly List<GameObject> hiddenMasks = new();
@@ -39,21 +35,13 @@ internal sealed class MimicDisguise : MonoBehaviour
 
     private Vector3 lastPosition;
     private Vector3 smoothedVelocity;
-    private float emoteWeight;
     private int playingEmote;
     private float lastFootstep;
-    private bool wasCrouching;
     private float pitch;
     private Coroutine? jumpRoutine;
     private float jumpHeight;
     private float appliedJump;
     private float noiseSeed;
-    private readonly HashSet<string> animParams = new();
-    private float holdWeight;
-    // Arm IK the Masked model brings along. The player clips pose the arms on their own; an IK still pulling a hand
-    // toward its old target left the right arm bent forward as if holding something.
-    private readonly List<IRigConstraint> armRigs = new();
-    private float grabValidateAt = -1f;
 
     internal bool Moving => smoothedVelocity.magnitude > 0.35f;
 
@@ -69,7 +57,6 @@ internal sealed class MimicDisguise : MonoBehaviour
         Renamed = Name != player.playerUsername;
         noiseSeed = Random.Range(0f, 100f);
         if (!All.Contains(this)) All.Add(this);
-        animator = Masked.creatureAnimator;
 
         // Vanilla hides a Masked while the player it copies has a body lying around. Ours copy living players too.
         Masked.mimickingPlayer = player;
@@ -85,7 +72,7 @@ internal sealed class MimicDisguise : MonoBehaviour
             node.gameObject.SetActive(false); // players can't be scanned
         }
         CopyFootstepAudio(player);
-        UsePlayerAnimations();
+        anim ??= MimicAnimator.Create(this);
         MakeNameTag(player);
         MakeSign();
         Inventory = GetComponent<MimicInventory>() ?? gameObject.AddComponent<MimicInventory>();
@@ -110,6 +97,7 @@ internal sealed class MimicDisguise : MonoBehaviour
     private void OnDestroy()
     {
         All.Remove(this);
+        anim?.Destroy();
         if (nameTagRoot != null) Destroy(nameTagRoot.gameObject);
     }
 
@@ -164,70 +152,6 @@ internal sealed class MimicDisguise : MonoBehaviour
         }
     }
 
-    private void UsePlayerAnimations()
-    {
-        if (animator == null) return;
-        // The player clips are bound to bone paths under "metarig". The Masked rig has to match or the body breaks.
-        if (animator.transform.Find("spine") == null)
-        {
-            Plugin.Log.LogWarning($"Masked rig doesn't match the player rig ({animator.transform.name}); keeping Masked animations");
-            return;
-        }
-        // The controller a player uses for their own body reacts to Walking/Sprinting/crouching like we need. The one
-        // the game uses for other players doesn't: it only plays the states each player's owner sends over the network.
-        playerController = BetterEmotesCompat.LocalController ?? StartOfRound.Instance.localClientAnimatorController;
-        if (playerController == null) return;
-        maskedController = animator.runtimeAnimatorController;
-        int rigs = SwitchController(playerController);
-        usingPlayerAnimations = true;
-        FindArmRigs();
-        if (animator.GetComponent<MimicAnimationEvents>() == null)
-        {
-            animator.gameObject.AddComponent<MimicAnimationEvents>().Disguise = this;
-        }
-        Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex}: player animations on " +
-                           $"({(BetterEmotesCompat.LocalController != null ? "BetterEmotes" : "vanilla")}, {rigs} rig(s) rebuilt)");
-    }
-
-    private void FindArmRigs()
-    {
-        armRigs.Clear();
-        var found = new List<string>();
-        foreach (var c in Masked.GetComponentsInChildren<MonoBehaviour>(true))
-        {
-            Transform? tip = c switch
-            {
-                TwoBoneIKConstraint two => two.data.tip,
-                ChainIKConstraint chain => chain.data.tip,
-                _ => null,
-            };
-            if (tip == null || c is not IRigConstraint rig) continue;
-            string bone = tip.name.ToLowerInvariant();
-            if (!bone.Contains("hand") && !bone.Contains("arm")) continue;
-            armRigs.Add(rig);
-            found.Add($"{c.name} -> {tip.name} ({rig.weight:0.##})");
-        }
-        if (found.Count > 0) Plugin.Log.LogInfo($"Masked #{Masked.thisEnemyIndex}: arm IK turned off: {string.Join(", ", found)}");
-    }
-
-    private int SwitchController(RuntimeAnimatorController controller)
-    {
-        animator.runtimeAnimatorController = controller;
-        animator.Rebind();
-        animator.SetFloat("animationSpeed", 1f);
-        animParams.Clear();
-        foreach (var p in animator.parameters) animParams.Add(p.name);
-        // The Masked's look rig (Animation Rigging) is built on the old controller; without a rebuild it keeps driving
-        // the bones with its own graph.
-        int n = 0;
-        foreach (var rig in Masked.GetComponentsInChildren<RigBuilder>(true))
-        {
-            rig.Clear();
-            if (rig.Build()) n++;
-        }
-        return n;
-    }
-
     private void MakeNameTag(PlayerControllerB player)
     {
         if (player.usernameBillboard == null || player.usernameCanvas == null) return;
@@ -264,8 +188,8 @@ internal sealed class MimicDisguise : MonoBehaviour
     private void MakeSign()
     {
         var prefab = BetterEmotesCompat.SignPrefab;
-        if (prefab == null || animator == null || !usingPlayerAnimations) return;
-        var obj = Instantiate(prefab, animator.transform);
+        if (prefab == null || anim == null) return;
+        var obj = Instantiate(prefab, anim.Body.transform);
         obj.name = "Sign";
         obj.transform.localPosition = new Vector3(0.029f, -0.45f, 1.3217f);
         obj.transform.localRotation = Quaternion.Euler(65.556f, 180f, 180f);
@@ -293,12 +217,12 @@ internal sealed class MimicDisguise : MonoBehaviour
         smoothedVelocity = Vector3.Lerp(smoothedVelocity, velocity, 10f * dt);
 
         KeepMaskHidden();
-        if (usingPlayerAnimations && !Masked.isEnemyDead)
+        if (anim != null && !Masked.isEnemyDead)
         {
             UpdateKillPose();
             if (!inKillPose) Animate();
         }
-        else if (usingPlayerAnimations && !deadPose)
+        else if (anim != null && !deadPose)
         {
             FallDead();
         }
@@ -306,19 +230,19 @@ internal sealed class MimicDisguise : MonoBehaviour
     }
 
     // The kill itself uses the Masked's grab animation (the player rig has nothing like it), still without a mask.
+    // The driver keeps its state meanwhile, so the body comes back walking and holding as before.
     private void UpdateKillPose()
     {
-        if (Masked.inKillAnimation && !inKillPose && maskedController != null)
+        if (Masked.inKillAnimation && !inKillPose)
         {
             inKillPose = true;
-            SwitchController(maskedController);
-            animator.SetBool("killing", true);
+            anim!.ShowMaskedBody();
+            anim.MaskedBool("killing", true);
         }
-        else if (!Masked.inKillAnimation && inKillPose && playerController != null)
+        else if (!Masked.inKillAnimation && inKillPose)
         {
             inKillPose = false;
-            SwitchController(playerController);
-            HoldingPose();
+            anim!.ShowPlayerBody();
         }
     }
 
@@ -329,54 +253,22 @@ internal sealed class MimicDisguise : MonoBehaviour
         deadPose = true;
         if (playingEmote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Stop(Masked);
         playingEmote = 0;
-        if (maskedController == null) return;
-        SwitchController(maskedController);
-        SetBool("Stunned", false);
-        SetBool("Dead", true);
+        anim!.ShowMaskedBody();
+        anim.StopDriver();
+        anim.MaskedBool("Stunned", false);
+        anim.MaskedBool("Dead", true);
     }
 
     private void Animate()
     {
-        bool moving = Moving && State.Emote == 0;
-        // Same parameters the game sets on your own player body.
-        Vector3 local = transform.InverseTransformDirection(smoothedVelocity);
-        var dir = new Vector2(local.x, local.z);
-        if (dir.sqrMagnitude > 0.0001f) dir.Normalize();
-        animator.SetBool("Walking", moving);
-        animator.SetBool("Sprinting", moving && State.Sprinting);
-        animator.SetBool("Sideways", moving && Mathf.Abs(dir.y) < 0.3f);
-        // The player's rule: moving mostly backwards or to the left plays the walk in reverse.
-        animator.SetFloat("animationSpeed", moving && dir.y < 0.5f && dir.x < 0.5f ? -1f : 1f);
-        if (State.Crouching && !wasCrouching) animator.SetTrigger("startCrouching");
-        wasCrouching = State.Crouching;
-        animator.SetBool("crouching", State.Crouching);
-        animator.SetBool("hinderedMovement", false);
-
-        // TooManyEmotes emotes (numbers from its Base up) are played by its own controller on top of this animator.
-        int vanillaEmote = State.Emote < TooManyEmotesCompat.Base ? State.Emote : 0;
+        // TooManyEmotes emotes (numbers from its Base up) are played by its own skeleton on top of this body.
         if (State.Emote != playingEmote)
         {
             if (playingEmote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Stop(Masked);
             if (State.Emote >= TooManyEmotesCompat.Base) TooManyEmotesCompat.Play(Masked, State.Emote);
             playingEmote = State.Emote;
         }
-        animator.SetInteger("emoteNumber", vanillaEmote);
-        emoteWeight = Mathf.Lerp(emoteWeight, vanillaEmote > 0 ? 1f : 0f, 10f * Time.deltaTime);
-        SetLayerWeight("EmotesNoArms", emoteWeight);
-        SetLayerWeight("UpperBodyEmotes", 0f);
-        // Doors, levers and the terminal play here for players, who fade it out after; it never plays for a Masked.
-        SetLayerWeight("SpecialAnimations", 0f);
-        foreach (var rig in armRigs) rig.weight = 0f;
-        // The player's own blend for holding items: the right-hand layer, plus both hands for two-handed things.
-        var held = Inventory != null ? Inventory.Held : null;
-        holdWeight = Mathf.Lerp(holdWeight, held != null ? 1f : 0f, 25f * Time.deltaTime);
-        SetLayerWeight("HoldingItemsRightHand", holdWeight);
-        SetLayerWeight("HoldingItemsBothHands", held == null || held.itemProperties.twoHandedAnimation ? holdWeight : Mathf.Abs(holdWeight - 1f));
-        if (grabValidateAt > 0f && Time.time >= grabValidateAt)
-        {
-            grabValidateAt = -1f;
-            SetBool("GrabValidated", true);
-        }
+        anim!.Tick(smoothedVelocity, Moving, State, Inventory != null ? Inventory.Held : null);
 
         if (sign != null)
         {
@@ -392,83 +284,23 @@ internal sealed class MimicDisguise : MonoBehaviour
         }
     }
 
-    private void SetLayerWeight(string layer, float weight)
-    {
-        int index = animator.GetLayerIndex(layer);
-        if (index >= 0) animator.SetLayerWeight(index, weight);
-    }
+    // ---- holding items (MimicInventory)
 
-    // Item animations name their own bools (grabAnim); skip any this controller doesn't have.
-    private void SetBool(string? name, bool value)
-    {
-        if (!string.IsNullOrEmpty(name) && animParams.Contains(name!)) animator.SetBool(name, value);
-    }
-
-    private void Trigger(string? name)
-    {
-        if (string.IsNullOrEmpty(name) || !animParams.Contains(name!)) return;
-        animator.ResetTrigger(name);
-        animator.SetTrigger(name);
-    }
-
-    // ---- holding items (MimicInventory), with the parameters the game sets on a player's body
-
-    private bool CanAnimateItems => usingPlayerAnimations && !inKillPose && animator != null;
+    private bool CanAnimateItems => anim != null && anim.OnPlayerBody;
 
     internal void OnGrab(GrabbableObject item)
     {
-        if (!CanAnimateItems) return;
-        SetBool("GrabInvalidated", false);
-        SetBool("GrabValidated", false);
-        SetBool("cancelHolding", false);
-        if (animParams.Contains("Throw")) animator.ResetTrigger("Throw");
-        SetBool("Grab", true);
-        SetBool(item.itemProperties.grabAnim, true);
-        float grabTime = item.itemProperties.grabAnimationTime > 0f ? item.itemProperties.grabAnimationTime : 0.4f;
-        grabValidateAt = Time.time + Mathf.Max(0.15f, grabTime - 0.1f);
+        if (CanAnimateItems) anim!.OnGrab(item);
     }
 
     internal void OnSwitch(GrabbableObject? old, GrabbableObject? now)
     {
-        if (!CanAnimateItems) return;
-        if (old != null) SetBool(old.itemProperties.grabAnim, false);
-        if (now == null)
-        {
-            SetBool("Grab", false);
-            SetBool("cancelHolding", true);
-            return;
-        }
-        SetBool("Grab", true);
-        SetBool(now.itemProperties.grabAnim, true);
-        if (old != null)
-        {
-            if (now.itemProperties.twoHandedAnimation || old.itemProperties.twoHandedAnimation) Trigger("SwitchHoldAnimationTwoHanded");
-            Trigger("SwitchHoldAnimation");
-            Trigger(now.itemProperties.pocketAnim);
-        }
-        SetBool("GrabValidated", true);
-        SetBool("cancelHolding", false);
+        if (CanAnimateItems) anim!.OnSwitch(old, now);
     }
 
     internal void OnDrop(GrabbableObject? item)
     {
-        grabValidateAt = -1f;
-        if (!CanAnimateItems) return;
-        SetBool("Grab", false);
-        if (item != null) SetBool(item.itemProperties.grabAnim, false);
-        SetBool("cancelHolding", true);
-        Trigger("Throw");
-    }
-
-    // The controller came back after the kill pose with every parameter reset.
-    private void HoldingPose()
-    {
-        var held = Inventory != null ? Inventory.Held : null;
-        if (held == null) return;
-        SetBool("Grab", true);
-        SetBool(held.itemProperties.grabAnim, true);
-        SetBool("GrabValidated", true);
-        SetBool("cancelHolding", false);
+        if (CanAnimateItems) anim!.OnDrop(item);
     }
 
     // ---- doors
@@ -614,14 +446,14 @@ internal sealed class MimicDisguise : MonoBehaviour
     // itself stays on the ground for the AI and the network.
     internal void Jump()
     {
-        if (!usingPlayerAnimations || inKillPose || Masked.isEnemyDead || State.Crouching) return;
+        if (anim == null || inKillPose || Masked.isEnemyDead || State.Crouching) return;
         if (jumpRoutine != null) StopCoroutine(jumpRoutine);
         jumpRoutine = StartCoroutine(JumpRoutine());
     }
 
     private IEnumerator JumpRoutine()
     {
-        SetBool("Jumping", true);
+        anim?.Bool("Jumping", true);
         PlayOneShot(JumpClip());
         yield return new WaitForSeconds(0.15f);
         float v = 6.5f; // about 0.9 m up, half a second in the air
@@ -634,7 +466,7 @@ internal sealed class MimicDisguise : MonoBehaviour
             v -= 24f * dt;
         } while (jumpHeight > 0f && !Masked.isEnemyDead && !inKillPose);
         jumpHeight = 0f;
-        SetBool("Jumping", false);
+        anim?.Bool("Jumping", false);
         PlayOneShot(StartOfRound.Instance.playerHitGroundSoft);
         jumpRoutine = null;
     }
@@ -642,8 +474,8 @@ internal sealed class MimicDisguise : MonoBehaviour
     // Lifts the model by the change since last frame, so it lands exactly where it started.
     private void LateUpdate()
     {
-        if (animator == null || animator.transform == transform || Mathf.Approximately(jumpHeight, appliedJump)) return;
-        animator.transform.position += Vector3.up * (jumpHeight - appliedJump);
+        if (anim == null || anim.Body.transform == transform || Mathf.Approximately(jumpHeight, appliedJump)) return;
+        anim.Body.transform.position += Vector3.up * (jumpHeight - appliedJump);
         appliedJump = jumpHeight;
     }
 
